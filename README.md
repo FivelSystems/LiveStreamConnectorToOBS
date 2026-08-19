@@ -16,8 +16,8 @@ your network, with an access key, a throughput toggle, and live diagnostics.
 *   🌐 **Network access** — bind all interfaces instead of loopback only, so a phone,
     tablet or second PC can view the stream. No elevation, no `netsh http add urlacl`.
 *   🔑 **Access key** — optional shared secret required as `?key=…`; anything else gets 403.
-*   ⚡ **Sync Capture toggle** — roughly 3× the stream framerate, at a cost in game
-    framerate. Measure it, keep the winner.
+*   🔽 **GPU downscale** — stream smaller than the source camera. Every cost scales with
+    pixel count, so this is the strongest dial available.
 *   🧵 **Threaded JPEG encoding** — the encode runs on a worker thread instead of the
     main thread, so streaming costs a buffer copy rather than a full encode.
 *   💤 **No cost with no viewers** — capture is skipped entirely while nothing is
@@ -77,7 +77,6 @@ game 58 fps  |  stream 19.4 fps  |  main 1.1 ms  |  jpeg 10.4 ms  |  render 0.0 
 | `main` > 5 ms | The buffer copy is large. | Lower Width/Height. |
 | `jpeg` > 30 ms | Worker cannot keep up with Target FPS. | Lower Width/Height or Target FPS. |
 | `dropped` climbing steadily | Capturing faster than the worker encodes. | Lower Target FPS. |
-| `stream` ≈ `game ÷ 3` | The async readback ceiling. | Enable **Sync Capture**. |
 | `stream` hits Target FPS but looks choppy | Not the plugin. | Client-side decode or display rate. |
 
 ## ⚡ Framerate
@@ -85,17 +84,6 @@ game 58 fps  |  stream 19.4 fps  |  main 1.1 ms  |  jpeg 10.4 ms  |  render 0.0 
 `AsyncGPUReadback` never stalls the GPU, but only one request is in flight at a time and
 each takes 2–3 frames to return, so throughput is about `game fps ÷ 2–3`. **Raising
 Target FPS above that ceiling does nothing.**
-
-**Sync Capture** swaps in `Texture2D.ReadPixels`, which stalls the GPU but returns pixels
-immediately, lifting throughput to `min(Target FPS, game fps)` at near-zero latency. The
-stall costs game framerate by an amount that depends entirely on your scene — hence a
-toggle rather than a default.
-
-| | Async (default) | Sync Capture |
-| --- | --- | --- |
-| Stream fps | `game fps ÷ 2–3` | `min(Target FPS, game fps)` |
-| Game fps | Barely affected | Lower — scene dependent |
-| Latency | 2–3 frames | ~0 |
 
 **Threaded Encode** (on by default) runs the JPEG encode on a worker thread using a
 built-in encoder, leaving the main thread with only a buffer copy. Turning it off falls
@@ -130,7 +118,6 @@ At most 4 concurrent stream clients are accepted; further requests get 503.
 | Control | Notes |
 | --- | --- |
 | Enable Streaming | Off stops the server. |
-| Sync Capture | ~3× stream fps, costs game fps. Persists with the scene. |
 | Threaded Encode | On by default. Off reverts to `EncodeToJPG` on the main thread. Persists. |
 | Flip Output Vertically | On by default. Turn off only if the stream arrives upside down. Persists. |
 | Allow Network Access | Off = loopback only. On = all interfaces. Persists. |
@@ -143,8 +130,8 @@ At most 4 concurrent stream clients are accepted; further requests get 503.
 | OBS URL | Read-only. The correct URL for current settings. |
 | Status | Diagnostics, refreshed once a second. |
 
-Sync Capture, Threaded Encode, Flip Output Vertically, Allow Network Access and Access
-Key save with the scene. The remaining controls currently do not.
+Flip Output Vertically, Allow Network Access and Access Key save with the scene. The
+remaining controls currently do not.
 
 ## ⚠️ Known limitations
 
@@ -154,8 +141,11 @@ Key save with the scene. The remaining controls currently do not.
     Pick an existing camera instead.
 *   **Dragging Width, Height or Port restarts the server on every frame of the drag**,
     which drops connected clients. Set the value, then reconnect OBS.
-*   **Only Sync Capture, Threaded Encode, Flip Output Vertically, Allow Network Access
-    and Access Key persist** with the scene.
+*   **Only Flip Output Vertically, Allow Network Access and Access Key persist** with
+    the scene.
+*   **Streaming still costs framerate.** The encode runs on a worker thread, but at a
+    large source resolution it can still fail to keep up and will contend for CPU. Lower
+    Width to downscale on the GPU before anything else.
 
 ## 🤝 Credits
 
@@ -191,7 +181,7 @@ A maintained fork of [url=https://hub.virtamate.com/resources/livestreamconnecto
 [list]
 [*] [b]Network access[/b]: bind all interfaces instead of loopback only, so a phone or second PC can view the stream. No elevation, no URL ACL.
 [*] [b]Access key[/b]: optional shared secret required as ?key=... ; anything else gets 403.
-[*] [b]Sync Capture toggle[/b]: roughly 3x the stream framerate, at a cost in game framerate.
+[*] [b]GPU downscale[/b]: stream smaller than the source camera. Every cost scales with pixel count, so this is the strongest dial available.
 [*] [b]Threaded JPEG encoding[/b]: the encode runs on a worker thread, so streaming costs a buffer copy rather than a full encode.
 [*] [b]No cost with no viewers[/b]: capture is skipped entirely while nothing is connected.
 [*] [b]Live diagnostics[/b]: game fps, stream fps, main-thread ms, worker ms, re-render ms and client count, once a second.

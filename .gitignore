@@ -1,0 +1,25 @@
+# Exclude Examples folder (Reference only)
+Examples/
+
+# Exclude IDE folders
+.vscode/
+.vs/
+.idea/
+*.user
+*.suo
+
+# Exclude EditorConfig
+.editorconfig
+
+# Exclude Build/Temp
+bin/
+obj/
+publish/
+*.var
+
+# Internal planning documents -- not for public release
+TODO.md
+ROADMAP.md
+
+# Local known-good snapshots used for bisecting crashes
+checkpoints/

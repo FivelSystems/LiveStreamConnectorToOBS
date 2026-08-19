@@ -1,0 +1,3 @@
+src/CameraScanner.cs
+src/HttpStreamServer.cs
+src/LiveStreamConnectorToOBS.cs

@@ -1,0 +1,25 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.902
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LiveStreamConnectorToOBS", "LiveStreamConnectorToOBS.csproj", "{0B1832AA-A038-4928-89C5-A3276393A89F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|AnyCpu = Debug|AnyCpu
+		Release|AnyCpu = Release|AnyCpu
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0B1832AA-A038-4928-89C5-A3276393A89F}.Debug|AnyCpu.ActiveCfg = Debug|AnyCpu
+		{0B1832AA-A038-4928-89C5-A3276393A89F}.Debug|AnyCpu.Build.0 = Debug|AnyCpu
+		{0B1832AA-A038-4928-89C5-A3276393A89F}.Release|AnyCpu.ActiveCfg = Release|AnyCpu
+		{0B1832AA-A038-4928-89C5-A3276393A89F}.Release|AnyCpu.Build.0 = Release|AnyCpu
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {EDCBBA71-617E-4068-A4EE-F78B68D3F740}
+	EndGlobalSection
+EndGlobal

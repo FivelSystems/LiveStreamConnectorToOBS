@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+*.sln text eol=crlf
+*.csproj text eol=crlf
+
+*.zip binary
+*.var binary

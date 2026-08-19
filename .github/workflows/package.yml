@@ -1,0 +1,38 @@
+name: PackageVar
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Get the version
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_OUTPUT
+    - name: Zip the release package
+      id: zip
+      run: |
+        mkdir -p publish
+        cp -r Custom publish/
+        cp meta.json publish/
+        cd publish
+        # Remove 'v' prefix if present for the integer version
+        CLEAN_VERSION=$(echo "${{ steps.get_version.outputs.VERSION }}" | sed 's/^v//')
+        zip -r "FivelSystems.LiveStreamConnectorToOBS.${CLEAN_VERSION}.var" *
+    - name: GitHub release
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        draft: false
+        files: publish/FivelSystems.LiveStreamConnectorToOBS.*.var
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

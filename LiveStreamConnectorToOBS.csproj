@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build"
+  xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <PropertyGroup>
+    <VamDir Condition=" '$(VamDir)' == '' ">$(MSBuildProjectDirectory)\..\..\..\..</VamDir>
+    <VamManagedDir>$(VamDir)\VaM_Data\Managed</VamManagedDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ProjectGuid>{0B1832AA-A038-4928-89C5-A3276393A89F}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AssemblyName>LiveStreamConnectorToOBS</AssemblyName>
+    <RootNamespace>FivelSystems.LiveStreamConnectorToOBS</RootNamespace>
+    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <LangVersion>5</LangVersion>
+    <DefineConstants>VAM_GT_1_20;VAM_GT_1_20_77_0</DefineConstants>
+    <NoStdLib>true</NoStdLib>
+    <NoConfig>true</NoConfig>
+    <AddAdditionalExplicitAssemblyReferences>false</AddAdditionalExplicitAssemblyReferences>
+    <ImplicitlyExpandDesignTimeFacades>false</ImplicitlyExpandDesignTimeFacades>
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>false</GenerateBindingRedirectsOutputType>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Platform)' == 'Unity' ">
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <TargetFrameworkProfile>Unity Subset v3.5</TargetFrameworkProfile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCpu' ">
+    <DebugSymbols>true</DebugSymbols>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>$(DefineConstants);DEBUG;TRACE</DefineConstants>
+    <FileAlignment>4096</FileAlignment>
+    <DebugType>full</DebugType>
+    <PlatformTarget>x86</PlatformTarget>
+    <ErrorReport>prompt</ErrorReport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="mscorlib">
+      <HintPath>$(VamManagedDir)\mscorlib.dll</HintPath>
+    </Reference>
+    <Reference Include="System">
+      <HintPath>$(VamManagedDir)\System.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Core">
+      <HintPath>$(VamManagedDir)\System.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Xml">
+      <HintPath>$(VamManagedDir)\System.Xml.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(VamManagedDir)\UnityEngine.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(VamManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(VamManagedDir)\UnityEngine.ImageConversionModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(VamManagedDir)\UnityEngine.UI.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(VamManagedDir)\UnityEngine.UIModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(VamManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(VamManagedDir)\Assembly-CSharp.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Custom\Scripts\FivelSystems\LiveStreamConnectorToOBS\src\CameraScanner.cs" />
+    <Compile Include="Custom\Scripts\FivelSystems\LiveStreamConnectorToOBS\src\HttpStreamServer.cs" />
+    <Compile Include="Custom\Scripts\FivelSystems\LiveStreamConnectorToOBS\src\LiveStreamConnectorToOBS.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Custom\Scripts\FivelSystems\LiveStreamConnectorToOBS\LiveStreamConnectorToOBS.cslist" />
+    <None Include="meta.json" />
+    <None Include=".github\workflows\package.yml" />
+  </ItemGroup>
+
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+
+  <Target Name="GetReferenceAssemblyPaths" />
+  <Target Name="GenerateTargetFrameworkMonikerAttribute" />
+
+</Project>

@@ -22,7 +22,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private const int MAX_READBACKS_IN_FLIGHT = 3;
 
         private UIDynamicToggle _enableToggle;
-        private UIDynamicToggle _syncToggle;
         private UIDynamicToggle _flipToggle;
         private UIDynamicToggle _networkToggle;
         private UIDynamicTextField _accessKeyField;
@@ -43,7 +42,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private readonly JSONStorableString _portStorable = new JSONStorableString("Port", "" + DEFAULT_PORT);
         private readonly JSONStorableString _urlStorable = new JSONStorableString("OBS URL", "");
         private readonly JSONStorableBool _enableStorable = new JSONStorableBool("Enable Streaming", true);
-        private readonly JSONStorableBool _syncCaptureStorable = new JSONStorableBool("Sync Capture", false);
         private readonly JSONStorableBool _flipStorable = new JSONStorableBool("Flip Output Vertically", true);
         private readonly JSONStorableBool _networkStorable = new JSONStorableBool("Allow Network Access", false);
         private readonly JSONStorableString _accessKeyStorable = new JSONStorableString("Access Key", "");
@@ -56,7 +54,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private GameObject _camContainer;
         private RenderTexture _outputRT;
         private readonly List<RenderTexture> _retiredTextures = new List<RenderTexture>();
-        private Texture2D _readbackTex;
         private HttpStreamServer _server;
         private bool _sourceIsCreated;
         private bool _needsRebuild;
@@ -64,9 +61,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private float _frameTimer;
         private string _lastStatus = "";
         private readonly Queue<PendingReadback> _readbacks = new Queue<PendingReadback>();
-        private bool _readbackTargetIsSRGB;
         private int _gameFpsCap;
-        private bool _syncBypassNoted;
         private JpegEncodeWorker _worker;
         private static byte[] s_srgbLUT;
 
@@ -109,12 +104,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 else StopStreaming();
             };
 
-            // Trades game fps for roughly 3x the stream fps.
-            _syncToggle = CreateToggle(_syncCaptureStorable);
-            RegisterBool(_syncCaptureStorable);
-
-            // Readback data starts at the bottom row and JPEG scanlines run top-down.
-            // Only the threaded encoder needs this -- EncodeToJPG flips on its own.
+            // Readback data starts at the bottom row; JPEG scanlines run top-down.
             _flipToggle = CreateToggle(_flipStorable);
             RegisterBool(_flipStorable);
 
@@ -249,15 +239,11 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             if (quality > 100) quality = 100;
             ApplyFrameBudget();
             _frameTimer = 0f;
-            _syncBypassNoted = false;
 
             RetireOutputTexture();
-            if (_readbackTex != null) Destroy(_readbackTex);
 
             _outputRT = new RenderTexture(w, h, RT_DEPTH, RenderTextureFormat.Default, RenderTextureReadWrite.sRGB);
             _outputRT.Create();
-            _readbackTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
-            _readbackTex.wrapMode = TextureWrapMode.Clamp;
 
             StopStreaming();
             try
@@ -458,19 +444,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 _statRenderMs += (Time.realtimeSinceStartup - tr) * 1000f;
             }
 
-            // 5. Remember the sRGB flag for the sync path, which reads it directly.
-            _readbackTargetIsSRGB = readFrom.sRGB;
-
-            // 6. Capture. Sync stalls the GPU but lifts throughput from
-            //    gameFps/2-3 to min(TargetFPS, gameFps), at a cost in game fps.
-            if (UseSyncCapture())
-            {
-                float t0 = Time.realtimeSinceStartup;
-                CaptureSync(readFrom);
-                _statConsumeMs += (Time.realtimeSinceStartup - t0) * 1000f;
-                _statCaptures++;
-            }
-            else if (_readbacks.Count < MAX_READBACKS_IN_FLIGHT)
+            // 5. Capture, if the queue has room.
+            if (_readbacks.Count < MAX_READBACKS_IN_FLIGHT)
             {
                 try
                 {
@@ -554,50 +529,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                            _flipStorable.val, readback.IsSRGB ? null : s_srgbLUT);
         }
 
-        /// <summary>
-        /// Sync capture is only usable on an sRGB source. A linear one would need a
-        /// gamma pass, and reading pixels back out of the Texture2D to apply it costs a
-        /// full-frame allocation on every capture. The async path converts on the worker
-        /// from a pooled buffer instead, so linear sources go there.
-        /// </summary>
-        private bool UseSyncCapture()
-        {
-            if (!_syncCaptureStorable.val) return false;
-            if (_readbackTargetIsSRGB) return true;
-
-            if (!_syncBypassNoted)
-            {
-                _syncBypassNoted = true;
-                SetStatus("Sync Capture ignored: source is linear, using async capture");
-            }
-            return false;
-        }
-
-        /// <summary>Immediate readback: stalls the GPU, holds no pending work.</summary>
-        private void CaptureSync(RenderTexture src)
-        {
-            if (_readbackTex == null || src == null || _server == null) return;
-
-            RenderTexture prev = RenderTexture.active;
-            try
-            {
-                RenderTexture.active = src;
-                _readbackTex.ReadPixels(new Rect(0f, 0f, _readbackTex.width, _readbackTex.height), 0, 0, false);
-                _readbackTex.Apply(false);
-            }
-            finally
-            {
-                RenderTexture.active = prev;
-            }
-
-            // No gamma pass here: correcting a linear source would mean reading the
-            // pixels back out, and the only way to do that on this Unity build is
-            // GetRawTextureData(), which allocates a full frame every call. Linear
-            // sources take the async path instead -- see UseSyncCapture.
-            byte[] jpeg = _readbackTex.EncodeToJPG(_server.JpegQuality);
-            if (jpeg != null) _server.SubmitFrame(jpeg, jpeg.Length);
-        }
-
         private void RenderCameraToMyRT()
         {
             // Fallback for cameras without a targetTexture -- one-shot render
@@ -658,12 +589,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             {
                 RetireOutputTexture();
                 ReleaseRetiredTextures();
-            }
-
-            if (_readbackTex != null)
-            {
-                Destroy(_readbackTex);
-                _readbackTex = null;
             }
         }
     }

@@ -17,8 +17,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private const int DEFAULT_JPEG_QUALITY = 75;
         private const int DEFAULT_FPS = 30;
 
-        // Requests complete in order, so a FIFO of a few keeps the GPU busy without
-        // the stall Sync Capture used to trade framerate for.
         private const int MAX_READBACKS_IN_FLIGHT = 3;
 
         private UIDynamicToggle _enableToggle;
@@ -387,7 +385,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
             bool hasClients = _server.ClientCount > 0;
 
-            // 1. Retire every request that has landed, oldest first.
             while (_readbacks.Count > 0 && _readbacks.Peek().Request.done)
             {
                 PendingReadback done = _readbacks.Dequeue();
@@ -409,10 +406,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 return;
             }
 
-            // 2. Resolve the RT to read from -- no manual render!
-            //    - "Create New Camera" mode: my camera renders to my RT natively
-            //    - Existing camera with targetTexture: read its existing RT
-            //    - Existing camera without targetTexture: must manual-render
             RenderTexture readFrom = null;
             bool needManualRender = false;
             if (_sourceIsCreated)
@@ -431,13 +424,10 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
             if (readFrom == null) return;
 
-            // 3. Throttle to target FPS (accumulated at step 0)
             if (_frameTimer < _frameBudget) return;
             _frameTimer -= _frameBudget;
             if (_frameTimer > _frameBudget) _frameTimer = 0f;
 
-            // 4. If we have to manual-render, do it now (only case is a
-            //    screen-only camera with no targetTexture -- rare in VAM)
             if (needManualRender)
             {
                 float tr = Time.realtimeSinceStartup;
@@ -445,10 +435,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 _statRenderMs += (Time.realtimeSinceStartup - tr) * 1000f;
             }
 
-            // 5. Downscale on the GPU when the stream is configured smaller than the
-            //    source. Everything downstream is linear in pixel count: the readback,
-            //    the copy and the encode. Blitting into an sRGB target also converts a
-            //    linear source for free, so the worker skips the CPU gamma pass.
+            // Downscaling here is linear in every cost downstream.
             if (_outputRT != null && readFrom != _outputRT &&
                 (readFrom.width != _outputRT.width || readFrom.height != _outputRT.height))
             {
@@ -456,12 +443,9 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 readFrom = _outputRT;
             }
 
-            // 6. The readback is the size of the source texture, not of the sliders.
-            //    Keep the pool matched to it, or the copy falls off its fast path onto
-            //    a per-byte loop over several million bytes of main thread time.
+            // Mismatched buffers drop the copy onto a per-byte loop.
             _worker.EnsureBufferSize(readFrom.width * readFrom.height * 4);
 
-            // 7. Capture, if the queue has room.
             if (_readbacks.Count < MAX_READBACKS_IN_FLIGHT)
             {
                 try

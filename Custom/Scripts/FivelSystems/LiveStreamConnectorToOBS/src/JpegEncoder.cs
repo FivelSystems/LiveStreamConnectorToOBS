@@ -122,9 +122,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private static readonly ushort[] s_acChromaCode = new ushort[256];
         private static readonly byte[] s_acChromaLen = new byte[256];
 
-        /// <summary>Stands in for a null gamma LUT, sparing the conversion a per-pixel branch.</summary>
-        private static readonly byte[] s_identityLut = BuildIdentityLut();
-
         static JpegEncoder()
         {
             BuildHuffmanTable(BITS_DC_LUMA, VALS_DC_LUMA, s_dcLumaCode, s_dcLumaLen);
@@ -175,7 +172,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
             SetQuality(quality);
             BuildPlanes(rgba, width, height, flipVertical,
-                        gammaLut == null || gammaLut.Length < 256 ? s_identityLut : gammaLut);
+                        gammaLut != null && gammaLut.Length >= 256 ? gammaLut : null);
 
             _outputLength = 0;
             _bitBuffer = 0;
@@ -249,10 +246,21 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                     int c = rowBottom + x * 4;
                     int d = rowBottom + xRight * 4;
 
-                    int ra = lut[rgba[a]], ga = lut[rgba[a + 1]], ba = lut[rgba[a + 2]];
-                    int rb = lut[rgba[b]], gb = lut[rgba[b + 1]], bb = lut[rgba[b + 2]];
-                    int rc = lut[rgba[c]], gc = lut[rgba[c + 1]], bc = lut[rgba[c + 2]];
-                    int rd = lut[rgba[d]], gd = lut[rgba[d + 1]], bd = lut[rgba[d + 2]];
+                    int ra, ga, ba, rb, gb, bb, rc, gc, bc, rd, gd, bd;
+                    if (lut == null)
+                    {
+                        ra = rgba[a]; ga = rgba[a + 1]; ba = rgba[a + 2];
+                        rb = rgba[b]; gb = rgba[b + 1]; bb = rgba[b + 2];
+                        rc = rgba[c]; gc = rgba[c + 1]; bc = rgba[c + 2];
+                        rd = rgba[d]; gd = rgba[d + 1]; bd = rgba[d + 2];
+                    }
+                    else
+                    {
+                        ra = lut[rgba[a]]; ga = lut[rgba[a + 1]]; ba = lut[rgba[a + 2]];
+                        rb = lut[rgba[b]]; gb = lut[rgba[b + 1]]; bb = lut[rgba[b + 2]];
+                        rc = lut[rgba[c]]; gc = lut[rgba[c + 1]]; bc = lut[rgba[c + 2]];
+                        rd = lut[rgba[d]]; gd = lut[rgba[d + 1]]; bd = lut[rgba[d + 2]];
+                    }
 
                     _planeY[lumaTop + x] = Luma(ra, ga, ba);
                     _planeY[lumaTop + xRight] = Luma(rb, gb, bb);
@@ -306,18 +314,30 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         {
             float[] block = _block;
 
-            // Edge blocks replicate the last row/column rather than reading past it.
-            for (int y = 0; y < 8; y++)
+            if (x0 + 8 <= planeWidth && y0 + 8 <= planeHeight)
             {
-                int sy = y0 + y;
-                if (sy >= planeHeight) sy = planeHeight - 1;
-                int row = sy * planeWidth;
-                int outRow = y * 8;
-                for (int x = 0; x < 8; x++)
+                for (int y = 0; y < 8; y++)
                 {
-                    int sx = x0 + x;
-                    if (sx >= planeWidth) sx = planeWidth - 1;
-                    block[outRow + x] = plane[row + sx] - 128f;
+                    int row = (y0 + y) * planeWidth + x0;
+                    int outRow = y * 8;
+                    for (int x = 0; x < 8; x++) block[outRow + x] = plane[row + x] - 128f;
+                }
+            }
+            else
+            {
+                // Edge blocks replicate the last row/column rather than reading past it.
+                for (int y = 0; y < 8; y++)
+                {
+                    int sy = y0 + y;
+                    if (sy >= planeHeight) sy = planeHeight - 1;
+                    int row = sy * planeWidth;
+                    int outRow = y * 8;
+                    for (int x = 0; x < 8; x++)
+                    {
+                        int sx = x0 + x;
+                        if (sx >= planeWidth) sx = planeWidth - 1;
+                        block[outRow + x] = plane[row + sx] - 128f;
+                    }
                 }
             }
 
@@ -376,8 +396,14 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         /// <summary>AAN forward DCT over eight samples; output stays scaled, see AAN_SCALE.</summary>
         private static void ForwardDct(float[] d, int offset, int step)
         {
-            int i0 = offset, i1 = offset + step, i2 = offset + step * 2, i3 = offset + step * 3;
-            int i4 = offset + step * 4, i5 = offset + step * 5, i6 = offset + step * 6, i7 = offset + step * 7;
+            int i0 = offset;
+            int i1 = i0 + step;
+            int i2 = i1 + step;
+            int i3 = i2 + step;
+            int i4 = i3 + step;
+            int i5 = i4 + step;
+            int i6 = i5 + step;
+            int i7 = i6 + step;
 
             float tmp0 = d[i0] + d[i7];
             float tmp7 = d[i0] - d[i7];
@@ -460,13 +486,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             if (v < 1) return 1;
             if (v > 255) return 255;
             return (byte)v;
-        }
-
-        private static byte[] BuildIdentityLut()
-        {
-            byte[] lut = new byte[256];
-            for (int i = 0; i < 256; i++) lut[i] = (byte)i;
-            return lut;
         }
 
         /// <summary>Assigns canonical Huffman codes from a BITS/HUFFVAL specification.</summary>

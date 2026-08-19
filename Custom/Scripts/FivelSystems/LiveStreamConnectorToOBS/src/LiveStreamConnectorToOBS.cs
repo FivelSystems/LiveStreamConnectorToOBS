@@ -127,10 +127,11 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
             _widthSlider = CreateSlider(_widthStorable);
             RegisterFloat(_widthStorable);
-            _widthStorable.setCallbackFunction = v => { _needsRebuild = true; };
+            _widthStorable.setCallbackFunction = v => { MatchHeightToSourceAspect(); _needsRebuild = true; };
 
-            // Derived from Width and the source aspect; shown, not set.
             _heightSlider = CreateSlider(_heightStorable);
+            RegisterFloat(_heightStorable);
+            _heightStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
             _qualitySlider = CreateSlider(_qualityStorable);
             RegisterFloat(_qualityStorable);
@@ -199,6 +200,18 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             SetStatus("Created new camera on plugin object");
         }
 
+        /// <summary>
+        /// Suggests a Height that will not stretch, only when Width changes. Height stays
+        /// the user's to override.
+        /// </summary>
+        private void MatchHeightToSourceAspect()
+        {
+            RenderTexture source = _sourceCamera != null ? _sourceCamera.targetTexture : null;
+            if (source == null || source.width <= 0 || source.height <= 0) return;
+            float ratio = (float)source.height / source.width;
+            _heightStorable.valNoCallback = Mathf.Max(1f, Mathf.Round(_widthStorable.val * ratio));
+        }
+
         private void AdoptSourceCamera(Camera cam)
         {
             _sourceCamera = cam;
@@ -211,7 +224,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                     _widthStorable.valNoCallback = cam.targetTexture.width;
                 _needsRebuild = true;
                 SetStatus("Using: " + cam.name + " (" + cam.targetTexture.width + "x" + cam.targetTexture.height
-                          + ") -- lower Width/Height to stream smaller than the source");
+                          + ") -- lower Width to stream smaller than the source");
             }
             else
             {
@@ -237,14 +250,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             int port;
             int.TryParse(_portStorable.val, out port);
             if (port <= 0 || port > 65535) port = DEFAULT_PORT;
-            // The downscale blit stretches unless the target keeps the source aspect.
-            RenderTexture sourceTexture = _sourceCamera != null ? _sourceCamera.targetTexture : null;
-            if (sourceTexture != null && sourceTexture.width > 0 && sourceTexture.height > 0)
-            {
-                h = Mathf.Max(1, Mathf.RoundToInt(w * (float)sourceTexture.height / sourceTexture.width));
-                _heightStorable.valNoCallback = h;
-            }
-
             int quality = Mathf.RoundToInt(_qualityStorable.val);
             if (quality < 10) quality = 10;
             if (quality > 100) quality = 100;

@@ -320,13 +320,15 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _frameTimer += Time.unscaledDeltaTime;
             _statFrames++;
 
+            bool hasClients = _server.ClientCount > 0;
+
             // 1. If a previous readback is done, consume it
             if (_readbackInFlight)
             {
                 if (_pendingRequest.done)
                 {
                     _readbackInFlight = false;
-                    if (!_pendingRequest.hasError)
+                    if (!_pendingRequest.hasError && hasClients)
                     {
                         float t0 = Time.realtimeSinceStartup;
                         ConsumeReadback();
@@ -338,6 +340,14 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 {
                     return; // still waiting
                 }
+            }
+
+            // With nobody connected, every term below is wasted frame time.
+            if (!hasClients)
+            {
+                _frameTimer = 0f;
+                UpdateDiagnostics();
+                return;
             }
 
             // 2. Resolve the RT to read from -- no manual render!

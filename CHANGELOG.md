@@ -12,17 +12,20 @@ version numbering.
 
 ### Added
 
-*   **Threaded JPEG encoding**, always on for the async capture path. A built-in
-    baseline encoder (4:2:0, Annex K tables, AAN DCT) runs on a worker thread, so the
-    main thread pays for a buffer copy rather than a full encode. `Texture2D.EncodeToJPG`
-    is a Unity object method and must run on the main thread, where it dominated the
-    streaming cost at 8–15 ms per frame at 720p. This is not a toggle: it is how
-    encoding works.
-*   **Flip Output Vertically** toggle, on by default. Readback data starts at the bottom
-    row while JPEG scanlines run top-down; `EncodeToJPG` handled this implicitly, the
-    threaded encoder needs it stated. Persists with the scene.
-
+*   **GPU downscale.** Width and Height now do something for a camera that already has
+    a targetTexture: the source is blitted into the output RenderTexture before readback.
+    Every downstream cost is linear in pixel count, so halving each axis quarters the
+    readback bandwidth, the copy and the encode together. Height is derived from Width
+    and the source aspect, so the blit cannot stretch the image.
 ### Removed
+
+*   **The bundled C# JPEG encoder and its worker thread.** Measured in VaM it ran about
+    five times slower than `Texture2D.EncodeToJPG`, which is libjpeg-turbo with SIMD:
+    42 ms per frame against roughly 5-8 ms for the same 600x1400 source. At that cost it
+    could not sustain the target rate and saturated a core, which dragged game framerate
+    down by half. The premise it was built on -- that `EncodeToJPG` dominated the frame
+    budget -- was inherited from an unverified cost model and did not hold. Encoding is
+    native and on the main thread again.
 
 *   **Sync Capture.** It existed to beat the single-readback throughput ceiling by
     stalling the GPU, paying game framerate for stream framerate. Queued readbacks reach
@@ -50,11 +53,8 @@ version numbering.
 *   The Status line reports main-thread and worker time separately — `main` and `jpeg`
     replace the single `encode` figure — and appends a dropped-frame count when the
     worker cannot keep up with the capture rate.
-*   **The frame handoff allocates nothing per frame.** The encoder writes into a
-    reusable buffer and returns a length; the server copies that into its own buffer on
-    submit, and each streaming thread copies out under the lock before writing to its
-    socket. Previously every frame allocated a right-sized JPEG array, which at 720p
-    lands on the large object heap.
+*   **The server copies frames in and out under its lock**, so a frame buffer is never
+    read while it is being replaced.
 *   Readback dimensions are taken from the source RenderTexture rather than assumed to
     match the configured Width/Height, so a mismatch no longer garbles the stream.
 

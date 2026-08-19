@@ -80,7 +80,7 @@ Rules and context for AI agents working on this repository.
     `WaitForEndOfFrame`), crashed the host process twice, and was reverted with **no root
     cause established**. Nothing could be ruled out because nothing was isolated. It
     occurred in desktop mode, and threading was never involved. Land pipeline changes one
-    at a time so a crash can be bisected against a checkpoint.
+    at a time, in their own commit, so a crash can be bisected.
 6.  **If the process dies, retrieve the log before touching anything:**
     `AppData\LocalLow\MeshedVR\VaM\output_log.txt`, or the `.dmp` beside the executable.
     A native stack in `d3d11.dll`/`UnityPlayer.dll` implicates the render side; a managed
@@ -88,8 +88,12 @@ Rules and context for AI agents working on this repository.
 7.  **Measure, do not reason.** The Status line reports game fps, stream fps, encode ms
     and re-render ms. Confirm which term dominates before changing anything, and confirm
     the change moved it afterwards.
-8.  **Checkpoint before risky work.** Add a zip to `checkpoints/` rather than replacing
-    an existing one.
+8.  **Work on a branch, one phase per branch.** `feat/…`, `fix/…`, `perf/…`, with
+    [Conventional Commits](https://www.conventionalcommits.org/). `main` is the
+    known-good state to bisect against and to fall back to when VaM kills the process.
+    Do not add zips to `checkpoints/` — git supersedes them. The two zips still there
+    predate the repository and hold the only copy of the pre-fork `GGchan` namespace and
+    the pre-`TcpListener` server; keep them, do not add more.
 
 ## VaM API notes
 

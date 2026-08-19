@@ -1,3 +1,5 @@
 src/CameraScanner.cs
 src/HttpStreamServer.cs
+src/JpegEncoder.cs
+src/JpegEncodeWorker.cs
 src/LiveStreamConnectorToOBS.cs

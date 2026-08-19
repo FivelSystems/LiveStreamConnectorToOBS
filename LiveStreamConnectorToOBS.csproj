@@ -77,6 +77,8 @@
   <ItemGroup>
     <Compile Include="Custom\Scripts\FivelSystems\LiveStreamConnectorToOBS\src\CameraScanner.cs" />
     <Compile Include="Custom\Scripts\FivelSystems\LiveStreamConnectorToOBS\src\HttpStreamServer.cs" />
+    <Compile Include="Custom\Scripts\FivelSystems\LiveStreamConnectorToOBS\src\JpegEncoder.cs" />
+    <Compile Include="Custom\Scripts\FivelSystems\LiveStreamConnectorToOBS\src\JpegEncodeWorker.cs" />
     <Compile Include="Custom\Scripts\FivelSystems\LiveStreamConnectorToOBS\src\LiveStreamConnectorToOBS.cs" />
   </ItemGroup>
 

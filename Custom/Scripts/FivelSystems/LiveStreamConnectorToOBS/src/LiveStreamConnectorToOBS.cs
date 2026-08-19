@@ -19,6 +19,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
         private UIDynamicToggle _enableToggle;
         private UIDynamicToggle _syncToggle;
+        private UIDynamicToggle _threadedToggle;
+        private UIDynamicToggle _flipToggle;
         private UIDynamicToggle _networkToggle;
         private UIDynamicTextField _accessKeyField;
         private UIDynamicTextField _portField;
@@ -39,6 +41,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private readonly JSONStorableString _urlStorable = new JSONStorableString("OBS URL", "");
         private readonly JSONStorableBool _enableStorable = new JSONStorableBool("Enable Streaming", true);
         private readonly JSONStorableBool _syncCaptureStorable = new JSONStorableBool("Sync Capture", false);
+        private readonly JSONStorableBool _threadedEncodeStorable = new JSONStorableBool("Threaded Encode", true);
+        private readonly JSONStorableBool _flipStorable = new JSONStorableBool("Flip Output Vertically", true);
         private readonly JSONStorableBool _networkStorable = new JSONStorableBool("Allow Network Access", false);
         private readonly JSONStorableString _accessKeyStorable = new JSONStorableString("Access Key", "");
         private readonly JSONStorableFloat _widthStorable = new JSONStorableFloat("Width", DEFAULT_WIDTH, 320f, 3840f, false);
@@ -61,6 +65,9 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private UnityEngine.Experimental.Rendering.AsyncGPUReadbackRequest _pendingRequest;
         private RenderTexture _readbackTarget;
         private bool _readbackTargetIsSRGB;
+        private int _readbackWidth;
+        private int _readbackHeight;
+        private JpegEncodeWorker _worker;
         private static byte[] s_srgbLUT;
 
         // Diagnostics counters.
@@ -91,12 +98,23 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _enableStorable.setCallbackFunction = v =>
             {
                 if (v) RebuildPipeline();
-                else StopServer();
+                else StopStreaming();
             };
 
             // Trades game fps for roughly 3x the stream fps.
             _syncToggle = CreateToggle(_syncCaptureStorable);
             RegisterBool(_syncCaptureStorable);
+
+            // On: a pure-C# encoder on a worker thread, so the frame budget pays for
+            // the copy alone. Off: Texture2D.EncodeToJPG on the main thread. Kept as a
+            // toggle so the two can be compared without rebuilding the plugin.
+            _threadedToggle = CreateToggle(_threadedEncodeStorable);
+            RegisterBool(_threadedEncodeStorable);
+
+            // Readback data starts at the bottom row and JPEG scanlines run top-down.
+            // Only the threaded encoder needs this -- EncodeToJPG flips on its own.
+            _flipToggle = CreateToggle(_flipStorable);
+            RegisterBool(_flipStorable);
 
             // Off = loopback only. On = bind all interfaces.
             _networkToggle = CreateToggle(_networkStorable);
@@ -246,7 +264,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _readbackTex.wrapMode = TextureWrapMode.Clamp;
             _readbackBytes = new byte[w * h * 4];
 
-            StopServer();
+            StopStreaming();
             try
             {
                 bool bindAll = _networkStorable.val;
@@ -254,6 +272,9 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
                 _server = new HttpStreamServer(port, w, h, quality, bindAll, key);
                 _server.Start();
+
+                _worker = new JpegEncodeWorker(_server, w * h * 4);
+                _worker.Start();
 
                 // Report a URL usable from the device that will consume it.
                 string host = "localhost";
@@ -301,8 +322,14 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             }
         }
 
-        private void StopServer()
+        private void StopStreaming()
         {
+            // Worker first: it holds the server and may still be mid-submit.
+            if (_worker != null)
+            {
+                _worker.Stop();
+                _worker = null;
+            }
             if (_server != null)
             {
                 _server.Stop();
@@ -389,6 +416,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             // 5. Remember which RT and its sRGB flag for the callback
             _readbackTarget = readFrom;
             _readbackTargetIsSRGB = readFrom.sRGB;
+            _readbackWidth = readFrom.width;
+            _readbackHeight = readFrom.height;
 
             // 6. Capture. Sync stalls the GPU but lifts throughput from
             //    gameFps/2-3 to min(TargetFPS, gameFps), at a cost in game fps.
@@ -426,16 +455,20 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             int clients = _server != null ? _server.ClientCount : 0;
             float gameFps = _statFrames / elapsed;
             float outFps = _statCaptures / elapsed;
-            float consumeMs = _statCaptures > 0 ? _statConsumeMs / _statCaptures : 0f;
+            float mainMs = _statCaptures > 0 ? _statConsumeMs / _statCaptures : 0f;
             float renderMs = _statCaptures > 0 ? _statRenderMs / _statCaptures : 0f;
+            float jpegMs = _worker != null ? _worker.LastEncodeMs : 0f;
+            int dropped = _worker != null ? _worker.TakeDroppedFrames() : 0;
 
             // Not via SetStatus: that logs, and once a second is spam.
             _statusStorable.val =
                 "game " + gameFps.ToString("F0") + " fps" +
                 "  |  stream " + outFps.ToString("F1") + " fps" +
-                "  |  encode " + consumeMs.ToString("F1") + " ms" +
+                "  |  main " + mainMs.ToString("F1") + " ms" +
+                "  |  jpeg " + jpegMs.ToString("F1") + " ms" +
                 "  |  render " + renderMs.ToString("F1") + " ms" +
-                "  |  " + clients + (clients == 1 ? " client" : " clients");
+                "  |  " + clients + (clients == 1 ? " client" : " clients") +
+                (dropped > 0 ? "  |  " + dropped + " dropped" : "");
 
             _statFrames = 0;
             _statCaptures = 0;
@@ -446,11 +479,35 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
         private void ConsumeReadback()
         {
-            if (_readbackTex == null || _readbackBytes == null) return;
-
             var data = _pendingRequest.GetData<byte>();
-            int needed = _readbackTex.width * _readbackTex.height * 4;
-            if (data.Length < needed || _readbackBytes.Length < needed) return;
+            int needed = _readbackWidth * _readbackHeight * 4;
+            if (needed <= 0 || data.Length < needed) return;
+
+            byte[] gammaLut = _readbackTargetIsSRGB ? null : s_srgbLUT;
+
+            if (_threadedEncodeStorable.val && _worker != null)
+            {
+                byte[] buffer = _worker.Rent();
+                if (buffer == null) return; // worker still busy; the next frame supersedes this one
+                if (buffer.Length < needed)
+                {
+                    _worker.Recycle(buffer);
+                    return;
+                }
+
+                if (data.Length == buffer.Length)
+                    data.CopyTo(buffer);
+                else
+                    for (int i = 0; i < needed; i++) buffer[i] = data[i];
+
+                _worker.Submit(buffer, _readbackWidth, _readbackHeight,
+                               _server.JpegQuality, _flipStorable.val, gammaLut);
+                return;
+            }
+
+            if (_readbackTex == null || _readbackBytes == null) return;
+            if (_readbackTex.width != _readbackWidth || _readbackTex.height != _readbackHeight) return;
+            if (_readbackBytes.Length < needed) return;
 
             // Bulk copy; CopyTo needs exact length, so keep a fallback.
             if (data.Length == _readbackBytes.Length)
@@ -491,6 +548,16 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             finally
             {
                 RenderTexture.active = prev;
+            }
+
+            if (_threadedEncodeStorable.val && _worker != null)
+            {
+                // Allocates, but it buys the encode off this thread.
+                byte[] raw = _readbackTex.GetRawTextureData();
+                if (raw == null) return;
+                _worker.Submit(raw, _readbackTex.width, _readbackTex.height, _server.JpegQuality,
+                               _flipStorable.val, _readbackTargetIsSRGB ? null : s_srgbLUT);
+                return;
             }
 
             if (!_readbackTargetIsSRGB && s_srgbLUT != null)
@@ -557,7 +624,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
         private void OnDestroy()
         {
-            StopServer();
+            StopStreaming();
             TeardownCamera();
             if (_outputRT != null)
             {

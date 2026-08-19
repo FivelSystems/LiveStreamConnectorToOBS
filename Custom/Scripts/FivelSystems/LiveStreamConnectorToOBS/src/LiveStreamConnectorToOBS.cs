@@ -65,6 +65,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private int _readbackWidth;
         private int _readbackHeight;
         private int _gameFpsCap;
+        private bool _syncBypassNoted;
         private JpegEncodeWorker _worker;
         private static byte[] s_srgbLUT;
 
@@ -239,6 +240,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             if (quality > 100) quality = 100;
             ApplyFrameBudget();
             _frameTimer = 0f;
+            _syncBypassNoted = false;
 
             if (_outputRT != null)
             {
@@ -438,7 +440,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
             // 6. Capture. Sync stalls the GPU but lifts throughput from
             //    gameFps/2-3 to min(TargetFPS, gameFps), at a cost in game fps.
-            if (_syncCaptureStorable.val)
+            if (UseSyncCapture())
             {
                 float t0 = Time.realtimeSinceStartup;
                 CaptureSync(readFrom);
@@ -525,6 +527,25 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                            _flipStorable.val, _readbackTargetIsSRGB ? null : s_srgbLUT);
         }
 
+        /// <summary>
+        /// Sync capture is only usable on an sRGB source. A linear one would need a
+        /// gamma pass, and reading pixels back out of the Texture2D to apply it costs a
+        /// full-frame allocation on every capture. The async path converts on the worker
+        /// from a pooled buffer instead, so linear sources go there.
+        /// </summary>
+        private bool UseSyncCapture()
+        {
+            if (!_syncCaptureStorable.val) return false;
+            if (_readbackTargetIsSRGB) return true;
+
+            if (!_syncBypassNoted)
+            {
+                _syncBypassNoted = true;
+                SetStatus("Sync Capture ignored: source is linear, using async capture");
+            }
+            return false;
+        }
+
         /// <summary>Immediate readback: stalls the GPU, holds no pending work.</summary>
         private void CaptureSync(RenderTexture src)
         {
@@ -542,26 +563,10 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 RenderTexture.active = prev;
             }
 
-            // Sync capture encodes on this thread. It cannot feed the worker: the only
-            // way out of a Texture2D on this Unity build is GetRawTextureData(), which
-            // returns a fresh array every call. At full rate that is hundreds of MB/s
-            // onto the large object heap, which Mono never compacts, and it exhausted
-            // the address space hard enough to take the machine down.
-            if (!_readbackTargetIsSRGB && s_srgbLUT != null)
-            {
-                // Slow path: GetRawTextureData allocates. Skipped for sRGB sources.
-                byte[] raw = _readbackTex.GetRawTextureData();
-                byte[] lut = s_srgbLUT;
-                for (int i = 0; i + 3 < raw.Length; i += 4)
-                {
-                    raw[i + 0] = lut[raw[i + 0]];
-                    raw[i + 1] = lut[raw[i + 1]];
-                    raw[i + 2] = lut[raw[i + 2]];
-                }
-                _readbackTex.LoadRawTextureData(raw);
-                _readbackTex.Apply(false);
-            }
-
+            // No gamma pass here: correcting a linear source would mean reading the
+            // pixels back out, and the only way to do that on this Unity build is
+            // GetRawTextureData(), which allocates a full frame every call. Linear
+            // sources take the async path instead -- see UseSyncCapture.
             byte[] jpeg = _readbackTex.EncodeToJPG(_server.JpegQuality);
             if (jpeg != null) _server.SubmitFrame(jpeg);
         }

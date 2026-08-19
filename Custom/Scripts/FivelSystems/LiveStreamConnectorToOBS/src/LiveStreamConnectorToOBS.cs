@@ -17,6 +17,10 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private const int DEFAULT_JPEG_QUALITY = 75;
         private const int DEFAULT_FPS = 30;
 
+        // Requests complete in order, so a FIFO of a few keeps the GPU busy without
+        // the stall Sync Capture used to trade framerate for.
+        private const int MAX_READBACKS_IN_FLIGHT = 3;
+
         private UIDynamicToggle _enableToggle;
         private UIDynamicToggle _syncToggle;
         private UIDynamicToggle _flipToggle;
@@ -59,12 +63,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private float _frameBudget;
         private float _frameTimer;
         private string _lastStatus = "";
-        private bool _readbackInFlight;
-        private UnityEngine.Experimental.Rendering.AsyncGPUReadbackRequest _pendingRequest;
-        private RenderTexture _readbackTarget;
+        private readonly Queue<PendingReadback> _readbacks = new Queue<PendingReadback>();
         private bool _readbackTargetIsSRGB;
-        private int _readbackWidth;
-        private int _readbackHeight;
         private int _gameFpsCap;
         private bool _syncBypassNoted;
         private JpegEncodeWorker _worker;
@@ -76,6 +76,14 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private float _statWindowStart;
         private float _statConsumeMs;
         private float _statRenderMs;
+
+        private struct PendingReadback
+        {
+            public UnityEngine.Experimental.Rendering.AsyncGPUReadbackRequest Request;
+            public int Width;
+            public int Height;
+            public bool IsSRGB;
+        }
 
         public override void Init()
         {
@@ -294,14 +302,14 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private void RetireOutputTexture()
         {
             if (_outputRT == null) return;
-            if (_readbackInFlight) _retiredTextures.Add(_outputRT);
+            if (_readbacks.Count > 0) _retiredTextures.Add(_outputRT);
             else DestroyTexture(_outputRT);
             _outputRT = null;
         }
 
         private void ReleaseRetiredTextures()
         {
-            if (_readbackInFlight || _retiredTextures.Count == 0) return;
+            if (_readbacks.Count > 0 || _retiredTextures.Count == 0) return;
             for (int i = 0; i < _retiredTextures.Count; i++) DestroyTexture(_retiredTextures[i]);
             _retiredTextures.Clear();
         }
@@ -392,24 +400,16 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
             bool hasClients = _server.ClientCount > 0;
 
-            // 1. If a previous readback is done, consume it
-            if (_readbackInFlight)
+            // 1. Retire every request that has landed, oldest first.
+            while (_readbacks.Count > 0 && _readbacks.Peek().Request.done)
             {
-                if (_pendingRequest.done)
-                {
-                    _readbackInFlight = false;
-                    if (!_pendingRequest.hasError && hasClients)
-                    {
-                        float t0 = Time.realtimeSinceStartup;
-                        ConsumeReadback();
-                        _statConsumeMs += (Time.realtimeSinceStartup - t0) * 1000f;
-                        _statCaptures++;
-                    }
-                }
-                else
-                {
-                    return; // still waiting
-                }
+                PendingReadback done = _readbacks.Dequeue();
+                if (done.Request.hasError || !hasClients) continue;
+
+                float t0 = Time.realtimeSinceStartup;
+                ConsumeReadback(done);
+                _statConsumeMs += (Time.realtimeSinceStartup - t0) * 1000f;
+                _statCaptures++;
             }
 
             ReleaseRetiredTextures();
@@ -458,11 +458,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 _statRenderMs += (Time.realtimeSinceStartup - tr) * 1000f;
             }
 
-            // 5. Remember which RT and its sRGB flag for the callback
-            _readbackTarget = readFrom;
+            // 5. Remember the sRGB flag for the sync path, which reads it directly.
             _readbackTargetIsSRGB = readFrom.sRGB;
-            _readbackWidth = readFrom.width;
-            _readbackHeight = readFrom.height;
 
             // 6. Capture. Sync stalls the GPU but lifts throughput from
             //    gameFps/2-3 to min(TargetFPS, gameFps), at a cost in game fps.
@@ -473,12 +470,16 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 _statConsumeMs += (Time.realtimeSinceStartup - t0) * 1000f;
                 _statCaptures++;
             }
-            else
+            else if (_readbacks.Count < MAX_READBACKS_IN_FLIGHT)
             {
                 try
                 {
-                    _pendingRequest = UnityEngine.Experimental.Rendering.AsyncGPUReadback.Request(readFrom, 0);
-                    _readbackInFlight = true;
+                    PendingReadback queued;
+                    queued.Request = UnityEngine.Experimental.Rendering.AsyncGPUReadback.Request(readFrom, 0);
+                    queued.Width = readFrom.width;
+                    queued.Height = readFrom.height;
+                    queued.IsSRGB = readFrom.sRGB;
+                    _readbacks.Enqueue(queued);
                 }
                 catch (Exception e)
                 {
@@ -526,12 +527,12 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _statWindowStart = now;
         }
 
-        private void ConsumeReadback()
+        private void ConsumeReadback(PendingReadback readback)
         {
             if (_worker == null) return;
 
-            var data = _pendingRequest.GetData<byte>();
-            int needed = _readbackWidth * _readbackHeight * 4;
+            var data = readback.Request.GetData<byte>();
+            int needed = readback.Width * readback.Height * 4;
             if (needed <= 0 || data.Length < needed) return;
 
             // Pooled buffer, so the async path allocates nothing per frame.
@@ -549,8 +550,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             else
                 for (int i = 0; i < needed; i++) buffer[i] = data[i];
 
-            _worker.Submit(buffer, _readbackWidth, _readbackHeight, _server.JpegQuality,
-                           _flipStorable.val, _readbackTargetIsSRGB ? null : s_srgbLUT);
+            _worker.Submit(buffer, readback.Width, readback.Height, _server.JpegQuality,
+                           _flipStorable.val, readback.IsSRGB ? null : s_srgbLUT);
         }
 
         /// <summary>
@@ -648,7 +649,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             // A readback outliving the plugin leaks a few MB, which is the cheaper of
             // the two outcomes: the texture is not owned by a GameObject, so the request
             // completes against live memory and the scene unload collects it.
-            if (_readbackInFlight)
+            if (_readbacks.Count > 0)
             {
                 _outputRT = null;
                 _retiredTextures.Clear();

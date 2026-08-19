@@ -19,7 +19,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
         private UIDynamicToggle _enableToggle;
         private UIDynamicToggle _syncToggle;
-        private UIDynamicToggle _threadedToggle;
         private UIDynamicToggle _flipToggle;
         private UIDynamicToggle _networkToggle;
         private UIDynamicTextField _accessKeyField;
@@ -41,7 +40,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private readonly JSONStorableString _urlStorable = new JSONStorableString("OBS URL", "");
         private readonly JSONStorableBool _enableStorable = new JSONStorableBool("Enable Streaming", true);
         private readonly JSONStorableBool _syncCaptureStorable = new JSONStorableBool("Sync Capture", false);
-        private readonly JSONStorableBool _threadedEncodeStorable = new JSONStorableBool("Threaded Encode", true);
         private readonly JSONStorableBool _flipStorable = new JSONStorableBool("Flip Output Vertically", true);
         private readonly JSONStorableBool _networkStorable = new JSONStorableBool("Allow Network Access", false);
         private readonly JSONStorableString _accessKeyStorable = new JSONStorableString("Access Key", "");
@@ -54,7 +52,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private GameObject _camContainer;
         private RenderTexture _outputRT;
         private Texture2D _readbackTex;
-        private byte[] _readbackBytes;
         private HttpStreamServer _server;
         private bool _sourceIsCreated;
         private bool _needsRebuild;
@@ -105,12 +102,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             // Trades game fps for roughly 3x the stream fps.
             _syncToggle = CreateToggle(_syncCaptureStorable);
             RegisterBool(_syncCaptureStorable);
-
-            // On: a pure-C# encoder on a worker thread, so the frame budget pays for
-            // the copy alone. Off: Texture2D.EncodeToJPG on the main thread. Kept as a
-            // toggle so the two can be compared without rebuilding the plugin.
-            _threadedToggle = CreateToggle(_threadedEncodeStorable);
-            RegisterBool(_threadedEncodeStorable);
 
             // Readback data starts at the bottom row and JPEG scanlines run top-down.
             // Only the threaded encoder needs this -- EncodeToJPG flips on its own.
@@ -260,7 +251,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _outputRT.Create();
             _readbackTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
             _readbackTex.wrapMode = TextureWrapMode.Clamp;
-            _readbackBytes = new byte[w * h * 4];
 
             StopStreaming();
             try
@@ -510,58 +500,29 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
         private void ConsumeReadback()
         {
+            if (_worker == null) return;
+
             var data = _pendingRequest.GetData<byte>();
             int needed = _readbackWidth * _readbackHeight * 4;
             if (needed <= 0 || data.Length < needed) return;
 
-            byte[] gammaLut = _readbackTargetIsSRGB ? null : s_srgbLUT;
-
-            if (_threadedEncodeStorable.val && _worker != null)
+            // Pooled buffer, so the async path allocates nothing per frame.
+            byte[] buffer = _worker.Rent();
+            if (buffer == null) return; // worker still busy; the next frame supersedes this one
+            if (buffer.Length < needed)
             {
-                byte[] buffer = _worker.Rent();
-                if (buffer == null) return; // worker still busy; the next frame supersedes this one
-                if (buffer.Length < needed)
-                {
-                    _worker.Recycle(buffer);
-                    return;
-                }
-
-                if (data.Length == buffer.Length)
-                    data.CopyTo(buffer);
-                else
-                    for (int i = 0; i < needed; i++) buffer[i] = data[i];
-
-                _worker.Submit(buffer, _readbackWidth, _readbackHeight,
-                               _server.JpegQuality, _flipStorable.val, gammaLut);
+                _worker.Recycle(buffer);
                 return;
             }
 
-            if (_readbackTex == null || _readbackBytes == null) return;
-            if (_readbackTex.width != _readbackWidth || _readbackTex.height != _readbackHeight) return;
-            if (_readbackBytes.Length < needed) return;
-
             // Bulk copy; CopyTo needs exact length, so keep a fallback.
-            if (data.Length == _readbackBytes.Length)
-                data.CopyTo(_readbackBytes);
+            if (data.Length == buffer.Length)
+                data.CopyTo(buffer);
             else
-                for (int i = 0; i < needed; i++) _readbackBytes[i] = data[i];
+                for (int i = 0; i < needed; i++) buffer[i] = data[i];
 
-            if (!_readbackTargetIsSRGB)
-            {
-                // Linear source: gamma-encode in place, alpha untouched.
-                byte[] lut = s_srgbLUT;
-                for (int i = 0; i < needed; i += 4)
-                {
-                    _readbackBytes[i + 0] = lut[_readbackBytes[i + 0]];
-                    _readbackBytes[i + 1] = lut[_readbackBytes[i + 1]];
-                    _readbackBytes[i + 2] = lut[_readbackBytes[i + 2]];
-                }
-            }
-
-            _readbackTex.LoadRawTextureData(_readbackBytes);
-            _readbackTex.Apply(false);
-            byte[] jpeg = _readbackTex.EncodeToJPG(_server.JpegQuality);
-            if (jpeg != null) _server.SubmitFrame(jpeg);
+            _worker.Submit(buffer, _readbackWidth, _readbackHeight, _server.JpegQuality,
+                           _flipStorable.val, _readbackTargetIsSRGB ? null : s_srgbLUT);
         }
 
         /// <summary>Immediate readback: stalls the GPU, holds no pending work.</summary>
@@ -581,16 +542,11 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 RenderTexture.active = prev;
             }
 
-            if (_threadedEncodeStorable.val && _worker != null)
-            {
-                // Allocates, but it buys the encode off this thread.
-                byte[] raw = _readbackTex.GetRawTextureData();
-                if (raw == null) return;
-                _worker.Submit(raw, _readbackTex.width, _readbackTex.height, _server.JpegQuality,
-                               _flipStorable.val, _readbackTargetIsSRGB ? null : s_srgbLUT);
-                return;
-            }
-
+            // Sync capture encodes on this thread. It cannot feed the worker: the only
+            // way out of a Texture2D on this Unity build is GetRawTextureData(), which
+            // returns a fresh array every call. At full rate that is hundreds of MB/s
+            // onto the large object heap, which Mono never compacts, and it exhausted
+            // the address space hard enough to take the machine down.
             if (!_readbackTargetIsSRGB && s_srgbLUT != null)
             {
                 // Slow path: GetRawTextureData allocates. Skipped for sRGB sources.

@@ -12,12 +12,12 @@ version numbering.
 
 ### Added
 
-*   **Threaded Encode** toggle, on by default. JPEG encoding moves to a worker thread
-    using a built-in baseline encoder (4:2:0, Annex K tables, AAN DCT), so the main
-    thread pays for a buffer copy rather than a full encode. `Texture2D.EncodeToJPG` is
-    a Unity object method and must run on the main thread, where it dominated the
-    streaming cost at 8–15 ms per frame at 720p. Turning the toggle off restores the
-    native path, so the two can be compared without a rebuild. Persists with the scene.
+*   **Threaded JPEG encoding**, always on for the async capture path. A built-in
+    baseline encoder (4:2:0, Annex K tables, AAN DCT) runs on a worker thread, so the
+    main thread pays for a buffer copy rather than a full encode. `Texture2D.EncodeToJPG`
+    is a Unity object method and must run on the main thread, where it dominated the
+    streaming cost at 8–15 ms per frame at 720p. This is not a toggle: it is how
+    encoding works.
 *   **Flip Output Vertically** toggle, on by default. Readback data starts at the bottom
     row while JPEG scanlines run top-down; `EncodeToJPG` handled this implicitly, the
     threaded encoder needs it stated. Persists with the scene.
@@ -42,6 +42,14 @@ version numbering.
 
 ### Fixed
 
+*   **Sync Capture no longer feeds the worker thread.** Doing so called
+    `Texture2D.GetRawTextureData()` every frame, which returns a freshly allocated array
+    on this Unity build -- there is no `NativeArray` overload before 2018.2. At a
+    600x1400 source that is 3.4 MB per frame onto the large object heap, which Mono does
+    not compact; sustained, it exhausted the address space and killed the host with
+    `VirtualAllocRemap failed`. Sync Capture encodes on the main thread again, as it did
+    before. The async path is unaffected: it copies into pooled buffers and allocates
+    nothing per frame.
 *   `Capture runs even with zero clients connected` is resolved; removed from the known
     limitations.
 
@@ -100,7 +108,10 @@ Carried over or not yet addressed — see the README for detail.
 *   `-- Create New Camera --` streams black; the created camera is never rendered.
 *   Dragging Width, Height or Port restarts the server on every frame of the drag,
     dropping connected clients.
-*   Only Sync Capture, Threaded Encode, Flip Output Vertically, Allow Network Access and
-    Access Key persist with the scene.
+*   Only Sync Capture, Flip Output Vertically, Allow Network Access and Access Key
+    persist with the scene.
+*   **Sync Capture with a linear source RenderTexture still allocates per frame** via the
+    same `GetRawTextureData()` gamma path, which predates this release. It is skipped
+    for sRGB sources, which is the common case, but it is the same hazard.
 *   `RebuildPipeline()` and `OnDestroy()` release the RenderTexture without checking for
     a pending readback.

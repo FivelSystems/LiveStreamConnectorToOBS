@@ -67,6 +67,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private bool _readbackTargetIsSRGB;
         private int _readbackWidth;
         private int _readbackHeight;
+        private int _gameFpsCap;
         private JpegEncodeWorker _worker;
         private static byte[] s_srgbLUT;
 
@@ -147,10 +148,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             };
 
             _fpsSlider = CreateSlider(_fpsStorable);
-            _fpsStorable.setCallbackFunction = v =>
-            {
-                _frameBudget = 1f / Mathf.Max(1f, v);
-            };
+            _fpsStorable.setCallbackFunction = v => { ApplyFrameBudget(); };
 
             _urlText = CreateTextField(_urlStorable);
 
@@ -248,7 +246,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             int quality = Mathf.RoundToInt(_qualityStorable.val);
             if (quality < 10) quality = 10;
             if (quality > 100) quality = 100;
-            _frameBudget = 1f / Mathf.Max(1f, _fpsStorable.val);
+            ApplyFrameBudget();
             _frameTimer = 0f;
 
             if (_outputRT != null)
@@ -297,6 +295,35 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             }
 
             _needsRebuild = false;
+        }
+
+        /// <summary>
+        /// The framerate ceiling the game is running under, or 0 when it is uncapped.
+        /// VSync overrides <c>targetFrameRate</c> in Unity, so it is checked first.
+        /// </summary>
+        private static int GetGameFpsCap()
+        {
+            int vsync = QualitySettings.vSyncCount;
+            if (vsync > 0)
+            {
+                int refresh = Screen.currentResolution.refreshRate;
+                if (refresh > 0) return refresh / vsync;
+            }
+            int target = Application.targetFrameRate;
+            return target > 0 ? target : 0;
+        }
+
+        /// <summary>
+        /// Capture rate is clamped to the game's own cap. Every capture costs a readback
+        /// and, on the manual-render path, a second scene render -- so streaming above
+        /// the rate the user allowed the game would spend GPU they asked not to spend.
+        /// </summary>
+        private void ApplyFrameBudget()
+        {
+            float requested = Mathf.Max(1f, _fpsStorable.val);
+            _gameFpsCap = GetGameFpsCap();
+            float effective = _gameFpsCap > 0 ? Mathf.Min(requested, _gameFpsCap) : requested;
+            _frameBudget = 1f / effective;
         }
 
         /// <summary>Address a remote client should dial, or null if undetermined.</summary>
@@ -452,6 +479,9 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             float elapsed = now - _statWindowStart;
             if (elapsed < 1f) return;
 
+            // The cap can change mid-session; the slider callback alone would miss it.
+            ApplyFrameBudget();
+
             int clients = _server != null ? _server.ClientCount : 0;
             float gameFps = _statFrames / elapsed;
             float outFps = _statCaptures / elapsed;
@@ -463,6 +493,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             // Not via SetStatus: that logs, and once a second is spam.
             _statusStorable.val =
                 "game " + gameFps.ToString("F0") + " fps" +
+                (_gameFpsCap > 0 ? " (cap " + _gameFpsCap + ")" : " (uncapped)") +
                 "  |  stream " + outFps.ToString("F1") + " fps" +
                 "  |  main " + mainMs.ToString("F1") + " ms" +
                 "  |  jpeg " + jpegMs.ToString("F1") + " ms" +

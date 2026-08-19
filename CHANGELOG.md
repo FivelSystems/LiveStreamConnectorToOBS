@@ -24,6 +24,13 @@ version numbering.
 
 ### Changed
 
+*   **Capture rate is clamped to the game's own framerate cap**, discovered at runtime
+    from `QualitySettings.vSyncCount` and the display refresh rate, falling back to
+    `Application.targetFrameRate`. Nothing is hardcoded, and the cap is re-read once a
+    second so changing it mid-session takes effect. Every capture costs a GPU readback
+    and, on the manual-render path, a second scene render, so capturing faster than the
+    game was allowed to run spent GPU the user had asked not to spend. The Status line
+    now reports the detected cap beside the game framerate.
 *   **Capture is skipped entirely with no clients connected.** The readback, gamma pass
     and encode previously ran regardless, so enabling the plugin cost framerate for
     output nobody was receiving. A readback already in flight is still retired.

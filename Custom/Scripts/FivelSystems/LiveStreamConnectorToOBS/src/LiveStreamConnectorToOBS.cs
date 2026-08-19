@@ -208,7 +208,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 _widthStorable.val = cam.targetTexture.width;
                 _heightStorable.val = cam.targetTexture.height;
                 _needsRebuild = true;
-                SetStatus("Using: " + cam.name + " (" + cam.targetTexture.width + "x" + cam.targetTexture.height + ")");
+                SetStatus("Using: " + cam.name + " (" + cam.targetTexture.width + "x" + cam.targetTexture.height
+                          + ") -- lower Width/Height to stream smaller than the source");
             }
             else
             {
@@ -444,12 +445,23 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 _statRenderMs += (Time.realtimeSinceStartup - tr) * 1000f;
             }
 
-            // 5. The readback is the size of the source texture, not of the sliders.
+            // 5. Downscale on the GPU when the stream is configured smaller than the
+            //    source. Everything downstream is linear in pixel count: the readback,
+            //    the copy and the encode. Blitting into an sRGB target also converts a
+            //    linear source for free, so the worker skips the CPU gamma pass.
+            if (_outputRT != null && readFrom != _outputRT &&
+                (readFrom.width != _outputRT.width || readFrom.height != _outputRT.height))
+            {
+                Graphics.Blit(readFrom, _outputRT);
+                readFrom = _outputRT;
+            }
+
+            // 6. The readback is the size of the source texture, not of the sliders.
             //    Keep the pool matched to it, or the copy falls off its fast path onto
             //    a per-byte loop over several million bytes of main thread time.
             _worker.EnsureBufferSize(readFrom.width * readFrom.height * 4);
 
-            // 6. Capture, if the queue has room.
+            // 7. Capture, if the queue has room.
             if (_readbacks.Count < MAX_READBACKS_IN_FLIGHT)
             {
                 try

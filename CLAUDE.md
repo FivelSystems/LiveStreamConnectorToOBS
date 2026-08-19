@@ -1,4 +1,4 @@
-# AGENTS.md
+# CLAUDE.md
 
 Rules and context for AI agents working on this repository.
 

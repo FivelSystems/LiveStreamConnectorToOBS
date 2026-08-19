@@ -29,13 +29,13 @@ Nothing yet.
     overwrites them.** Selecting a camera used to assign Width and Height from the source
     resolution, which discarded any downscale on every scene load since restoring a scene
     re-selects the camera. Width is now only clamped down to the source when it exceeds
-    it. Changing Width suggests a Height that preserves the source aspect, so the
-    downscale does not stretch by accident, but Height remains yours to override.
+    it. Any resolution and any aspect ratio are accepted.
 *   **GPU downscale.** Width and Height now do something for a camera that already has
     a targetTexture: the source is blitted into the output RenderTexture before readback.
     Every downstream cost is linear in pixel count, so halving each axis quarters the
-    readback bandwidth, the copy and the encode together. Height is derived from Width
-    and the source aspect, so the blit cannot stretch the image.
+    readback bandwidth, the copy and the encode together. The source is scaled to fit
+    the target and centred, letterboxing whatever the two aspect ratios do not have in
+    common, so the image is never distorted at any target resolution.
 
 ### Removed
 

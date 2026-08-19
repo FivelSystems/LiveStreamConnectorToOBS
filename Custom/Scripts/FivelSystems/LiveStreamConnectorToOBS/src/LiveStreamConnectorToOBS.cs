@@ -127,7 +127,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
             _widthSlider = CreateSlider(_widthStorable);
             RegisterFloat(_widthStorable);
-            _widthStorable.setCallbackFunction = v => { MatchHeightToSourceAspect(); _needsRebuild = true; };
+            _widthStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
             _heightSlider = CreateSlider(_heightStorable);
             RegisterFloat(_heightStorable);
@@ -201,15 +201,32 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         }
 
         /// <summary>
-        /// Suggests a Height that will not stretch, only when Width changes. Height stays
-        /// the user's to override.
+        /// Scales the source into the target without distorting it, letterboxing whatever
+        /// the aspects do not have in common. Graphics.Blit would stretch to fill.
         /// </summary>
-        private void MatchHeightToSourceAspect()
+        private static void BlitPreservingAspect(RenderTexture source, RenderTexture target)
         {
-            RenderTexture source = _sourceCamera != null ? _sourceCamera.targetTexture : null;
-            if (source == null || source.width <= 0 || source.height <= 0) return;
-            float ratio = (float)source.height / source.width;
-            _heightStorable.valNoCallback = Mathf.Max(1f, Mathf.Round(_widthStorable.val * ratio));
+            float scale = Mathf.Min((float)target.width / source.width,
+                                    (float)target.height / source.height);
+            float w = source.width * scale;
+            float h = source.height * scale;
+            float x = (target.width - w) * 0.5f;
+            float y = (target.height - h) * 0.5f;
+
+            RenderTexture previous = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = target;
+                GL.Clear(true, true, Color.black);
+                GL.PushMatrix();
+                GL.LoadPixelMatrix(0f, target.width, target.height, 0f);
+                Graphics.DrawTexture(new Rect(x, y, w, h), source);
+                GL.PopMatrix();
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+            }
         }
 
         private void AdoptSourceCamera(Camera cam)
@@ -456,7 +473,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             if (_outputRT != null && readFrom != _outputRT &&
                 (readFrom.width != _outputRT.width || readFrom.height != _outputRT.height))
             {
-                Graphics.Blit(readFrom, _outputRT);
+                BlitPreservingAspect(readFrom, _outputRT);
                 readFrom = _outputRT;
             }
 

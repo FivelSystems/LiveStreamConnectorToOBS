@@ -22,7 +22,20 @@ version numbering.
     row while JPEG scanlines run top-down; `EncodeToJPG` handled this implicitly, the
     threaded encoder needs it stated. Persists with the scene.
 
+### Removed
+
+*   **Sync Capture.** It existed to beat the single-readback throughput ceiling by
+    stalling the GPU, paying game framerate for stream framerate. Queued readbacks reach
+    the same throughput without the stall, and after the allocation fix the toggle could
+    only cost framerate: it forced `EncodeToJPG` back onto the main thread. With it goes
+    the last main-thread encode, the intermediate `Texture2D`, and `EncodeToJPG` itself.
+
 ### Changed
+
+*   **Up to three readbacks are queued** rather than one at a time. A single request
+    takes two to three frames to return, which capped throughput near `game fps / 3`
+    regardless of Target FPS. Requests complete in submission order, so the queue drains
+    from the head, and each carries the width, height and colour space it was taken at.
 
 *   **Capture rate is clamped to the game's own framerate cap**, discovered at runtime
     from `QualitySettings.vSyncCount` and the display refresh rate, falling back to
@@ -46,6 +59,13 @@ version numbering.
     match the configured Width/Height, so a mismatch no longer garbles the stream.
 
 ### Fixed
+
+*   **RenderTextures are released only once their readback has returned.**
+    `RebuildPipeline()` and `OnDestroy()` freed `_outputRT` with a request possibly still
+    pointing at it, which is an access violation rather than an exception, on the two
+    paths exercised most during development: resolution change and plugin reload. At
+    teardown anything still pending is left alone; leaking a few MB beats killing the
+    host.
 
 *   **Sync Capture no longer feeds the worker thread.** Doing so called
     `Texture2D.GetRawTextureData()` every frame, which returns a freshly allocated array

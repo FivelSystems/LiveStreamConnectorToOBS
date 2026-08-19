@@ -37,6 +37,11 @@ version numbering.
 *   The Status line reports main-thread and worker time separately — `main` and `jpeg`
     replace the single `encode` figure — and appends a dropped-frame count when the
     worker cannot keep up with the capture rate.
+*   **The frame handoff allocates nothing per frame.** The encoder writes into a
+    reusable buffer and returns a length; the server copies that into its own buffer on
+    submit, and each streaming thread copies out under the lock before writing to its
+    socket. Previously every frame allocated a right-sized JPEG array, which at 720p
+    lands on the large object heap.
 *   Readback dimensions are taken from the source RenderTexture rather than assumed to
     match the configured Width/Height, so a mismatch no longer garbles the stream.
 
@@ -110,8 +115,5 @@ Carried over or not yet addressed — see the README for detail.
     dropping connected clients.
 *   Only Sync Capture, Flip Output Vertically, Allow Network Access and Access Key
     persist with the scene.
-*   **Sync Capture with a linear source RenderTexture still allocates per frame** via the
-    same `GetRawTextureData()` gamma path, which predates this release. It is skipped
-    for sRGB sources, which is the common case, but it is the same hazard.
 *   `RebuildPipeline()` and `OnDestroy()` release the RenderTexture without checking for
     a pending readback.

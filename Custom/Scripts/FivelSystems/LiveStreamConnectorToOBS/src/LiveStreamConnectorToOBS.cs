@@ -568,7 +568,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             // GetRawTextureData(), which allocates a full frame every call. Linear
             // sources take the async path instead -- see UseSyncCapture.
             byte[] jpeg = _readbackTex.EncodeToJPG(_server.JpegQuality);
-            if (jpeg != null) _server.SubmitFrame(jpeg);
+            if (jpeg != null) _server.SubmitFrame(jpeg, jpeg.Length);
         }
 
         private void RenderCameraToMyRT()

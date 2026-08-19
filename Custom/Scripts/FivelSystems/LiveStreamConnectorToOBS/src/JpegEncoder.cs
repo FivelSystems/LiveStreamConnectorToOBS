@@ -159,16 +159,19 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
         private int _quality = -1;
 
+        /// <summary>Runs longer than the frame; pair it with the length Encode returned.</summary>
+        public byte[] OutputBuffer { get { return _output; } }
+
         /// <summary>
-        /// Encodes tightly packed RGBA, or returns null if the arguments do not describe
-        /// a full frame. Set <paramref name="flipVertical"/> for Unity readback data,
+        /// Encodes tightly packed RGBA into <see cref="OutputBuffer"/>, returning its
+        /// byte count or 0. Set <paramref name="flipVertical"/> for Unity readback data,
         /// whose first row is the bottom of the image.
         /// </summary>
-        public byte[] Encode(byte[] rgba, int width, int height, int quality, bool flipVertical, byte[] gammaLut)
+        public int Encode(byte[] rgba, int width, int height, int quality, bool flipVertical, byte[] gammaLut)
         {
-            if (rgba == null || width <= 0 || height <= 0) return null;
+            if (rgba == null || width <= 0 || height <= 0) return 0;
             long needed = (long)width * height * 4;
-            if (rgba.Length < needed) return null;
+            if (rgba.Length < needed) return 0;
 
             SetQuality(quality);
             BuildPlanes(rgba, width, height, flipVertical,
@@ -186,9 +189,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             Emit(0xFF);
             Emit(0xD9);
 
-            byte[] result = new byte[_outputLength];
-            Buffer.BlockCopy(_output, 0, result, 0, _outputLength);
-            return result;
+            return _outputLength;
         }
 
         private void WriteScan(int width, int height)

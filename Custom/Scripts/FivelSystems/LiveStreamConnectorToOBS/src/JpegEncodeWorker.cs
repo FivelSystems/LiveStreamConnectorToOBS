@@ -151,11 +151,12 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 try
                 {
                     long start = Stopwatch.GetTimestamp();
-                    byte[] jpeg = _encoder.Encode(rgba, width, height, quality, flip, lut);
+                    int length = _encoder.Encode(rgba, width, height, quality, flip, lut);
                     long elapsed = Stopwatch.GetTimestamp() - start;
                     _lastEncodeMicroseconds = (int)(elapsed * 1000000L / Stopwatch.Frequency);
 
-                    if (jpeg != null && !_stop) _server.SubmitFrame(jpeg);
+                    // SubmitFrame copies, so the encoder buffer is free to reuse.
+                    if (length > 0 && !_stop) _server.SubmitFrame(_encoder.OutputBuffer, length);
                 }
                 catch
                 {

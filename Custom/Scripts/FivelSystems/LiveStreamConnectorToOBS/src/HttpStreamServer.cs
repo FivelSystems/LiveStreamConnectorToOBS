@@ -35,6 +35,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private readonly object _frameLock = new object();
         private readonly List<TcpClient> _clients = new List<TcpClient>();
         private byte[] _currentFrame;
+        private int _currentFrameLength;
         private int _frameId;
         private volatile bool _stop;
         private int _clientCount;
@@ -100,12 +101,16 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _acceptThread = null;
         }
 
-        /// <summary>Publishes a frame and wakes every streaming thread.</summary>
-        public void SubmitFrame(byte[] jpeg)
+        /// <summary>Publishes a frame and wakes every streaming thread. Copies in.</summary>
+        public void SubmitFrame(byte[] jpeg, int length)
         {
+            if (jpeg == null || length <= 0 || length > jpeg.Length) return;
             lock (_frameLock)
             {
-                _currentFrame = jpeg;
+                if (_currentFrame == null || _currentFrame.Length < length)
+                    _currentFrame = new byte[length];
+                Buffer.BlockCopy(jpeg, 0, _currentFrame, 0, length);
+                _currentFrameLength = length;
                 _frameId++;
                 Monitor.PulseAll(_frameLock);
             }
@@ -307,26 +312,31 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             try
             {
                 int lastId = 0;
+                byte[] frame = null;
                 while (!_stop)
                 {
-                    byte[] frame;
+                    int length;
                     lock (_frameLock)
                     {
                         while (!_stop && _frameId == lastId)
                             Monitor.Wait(_frameLock, 250);
 
                         if (_stop) break;
-                        frame = _currentFrame;
+                        length = _currentFrameLength;
                         lastId = _frameId;
+                        if (length <= 0) continue;
+
+                        // Copy out so the socket write does not hold the lock.
+                        if (frame == null || frame.Length < length) frame = new byte[length];
+                        Buffer.BlockCopy(_currentFrame, 0, frame, 0, length);
                     }
-                    if (frame == null) continue;
 
                     string part = "--" + BOUNDARY + "\r\n" +
                                   "Content-Type: image/jpeg\r\n" +
-                                  "Content-Length: " + frame.Length + "\r\n\r\n";
+                                  "Content-Length: " + length + "\r\n\r\n";
                     byte[] partBytes = Encoding.ASCII.GetBytes(part);
                     ns.Write(partBytes, 0, partBytes.Length);
-                    ns.Write(frame, 0, frame.Length);
+                    ns.Write(frame, 0, length);
                     ns.Write(CRLF, 0, CRLF.Length);
                     ns.Flush();
                 }

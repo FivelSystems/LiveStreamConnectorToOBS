@@ -233,6 +233,14 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             int port;
             int.TryParse(_portStorable.val, out port);
             if (port <= 0 || port > 65535) port = DEFAULT_PORT;
+            // The downscale blit stretches unless the target keeps the source aspect.
+            RenderTexture sourceTexture = _sourceCamera != null ? _sourceCamera.targetTexture : null;
+            if (sourceTexture != null && sourceTexture.width > 0 && sourceTexture.height > 0)
+            {
+                h = Mathf.Max(1, Mathf.RoundToInt(w * (float)sourceTexture.height / sourceTexture.width));
+                _heightStorable.valNoCallback = h;
+            }
+
             int quality = Mathf.RoundToInt(_qualityStorable.val);
             if (quality < 10) quality = 10;
             if (quality > 100) quality = 100;

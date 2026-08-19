@@ -10,7 +10,33 @@ version numbering.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+*   **Threaded Encode** toggle, on by default. JPEG encoding moves to a worker thread
+    using a built-in baseline encoder (4:2:0, Annex K tables, AAN DCT), so the main
+    thread pays for a buffer copy rather than a full encode. `Texture2D.EncodeToJPG` is
+    a Unity object method and must run on the main thread, where it dominated the
+    streaming cost at 8–15 ms per frame at 720p. Turning the toggle off restores the
+    native path, so the two can be compared without a rebuild. Persists with the scene.
+*   **Flip Output Vertically** toggle, on by default. Readback data starts at the bottom
+    row while JPEG scanlines run top-down; `EncodeToJPG` handled this implicitly, the
+    threaded encoder needs it stated. Persists with the scene.
+
+### Changed
+
+*   **Capture is skipped entirely with no clients connected.** The readback, gamma pass
+    and encode previously ran regardless, so enabling the plugin cost framerate for
+    output nobody was receiving. A readback already in flight is still retired.
+*   The Status line reports main-thread and worker time separately — `main` and `jpeg`
+    replace the single `encode` figure — and appends a dropped-frame count when the
+    worker cannot keep up with the capture rate.
+*   Readback dimensions are taken from the source RenderTexture rather than assumed to
+    match the configured Width/Height, so a mismatch no longer garbles the stream.
+
+### Fixed
+
+*   `Capture runs even with zero clients connected` is resolved; removed from the known
+    limitations.
 
 ## [v1] — 2026-08-19
 
@@ -67,7 +93,7 @@ Carried over or not yet addressed — see the README for detail.
 *   `-- Create New Camera --` streams black; the created camera is never rendered.
 *   Dragging Width, Height or Port restarts the server on every frame of the drag,
     dropping connected clients.
-*   Capture runs even with zero clients connected.
-*   Only Sync Capture, Allow Network Access and Access Key persist with the scene.
+*   Only Sync Capture, Threaded Encode, Flip Output Vertically, Allow Network Access and
+    Access Key persist with the scene.
 *   `RebuildPipeline()` and `OnDestroy()` release the RenderTexture without checking for
     a pending readback.

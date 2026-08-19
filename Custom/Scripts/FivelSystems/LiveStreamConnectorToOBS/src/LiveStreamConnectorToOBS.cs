@@ -51,6 +51,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private Camera _sourceCamera;
         private GameObject _camContainer;
         private RenderTexture _outputRT;
+        private readonly List<RenderTexture> _retiredTextures = new List<RenderTexture>();
         private Texture2D _readbackTex;
         private HttpStreamServer _server;
         private bool _sourceIsCreated;
@@ -242,11 +243,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _frameTimer = 0f;
             _syncBypassNoted = false;
 
-            if (_outputRT != null)
-            {
-                _outputRT.Release();
-                Destroy(_outputRT);
-            }
+            RetireOutputTexture();
             if (_readbackTex != null) Destroy(_readbackTex);
 
             _outputRT = new RenderTexture(w, h, RT_DEPTH, RenderTextureFormat.Default, RenderTextureReadWrite.sRGB);
@@ -287,6 +284,33 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             }
 
             _needsRebuild = false;
+        }
+
+        /// <summary>
+        /// Freeing a RenderTexture with a readback still pointing at it is an access
+        /// violation, which kills the process outright rather than throwing. Hold it
+        /// until the request returns.
+        /// </summary>
+        private void RetireOutputTexture()
+        {
+            if (_outputRT == null) return;
+            if (_readbackInFlight) _retiredTextures.Add(_outputRT);
+            else DestroyTexture(_outputRT);
+            _outputRT = null;
+        }
+
+        private void ReleaseRetiredTextures()
+        {
+            if (_readbackInFlight || _retiredTextures.Count == 0) return;
+            for (int i = 0; i < _retiredTextures.Count; i++) DestroyTexture(_retiredTextures[i]);
+            _retiredTextures.Clear();
+        }
+
+        private static void DestroyTexture(RenderTexture rt)
+        {
+            if (rt == null) return;
+            rt.Release();
+            Destroy(rt);
         }
 
         /// <summary>
@@ -387,6 +411,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                     return; // still waiting
                 }
             }
+
+            ReleaseRetiredTextures();
 
             // With nobody connected, every term below is wasted frame time.
             if (!hasClients)
@@ -618,12 +644,21 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         {
             StopStreaming();
             TeardownCamera();
-            if (_outputRT != null)
+
+            // A readback outliving the plugin leaks a few MB, which is the cheaper of
+            // the two outcomes: the texture is not owned by a GameObject, so the request
+            // completes against live memory and the scene unload collects it.
+            if (_readbackInFlight)
             {
-                _outputRT.Release();
-                Destroy(_outputRT);
                 _outputRT = null;
+                _retiredTextures.Clear();
             }
+            else
+            {
+                RetireOutputTexture();
+                ReleaseRetiredTextures();
+            }
+
             if (_readbackTex != null)
             {
                 Destroy(_readbackTex);

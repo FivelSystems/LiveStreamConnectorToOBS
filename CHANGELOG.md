@@ -25,6 +25,11 @@ Nothing yet.
 *   **Flip Output Vertically** toggle, on by default. Readback data starts at the bottom
     row while JPEG scanlines run top-down; `EncodeToJPG` handled this implicitly, the
     threaded encoder needs it stated. Persists with the scene.
+*   **Width, JPEG Quality and Target FPS persist with the scene.** Selecting a camera no
+    longer overwrites Width with the source resolution, which previously discarded any
+    downscale on every scene load, since restoring a scene re-selects the camera. It is
+    clamped down to the source when larger, never raised. Height is derived from Width
+    and the source aspect and is display-only.
 *   **GPU downscale.** Width and Height now do something for a camera that already has
     a targetTexture: the source is blitted into the output RenderTexture before readback.
     Every downstream cost is linear in pixel count, so halving each axis quarters the

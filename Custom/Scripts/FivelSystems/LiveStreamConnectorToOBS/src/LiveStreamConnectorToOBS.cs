@@ -126,17 +126,21 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _refreshButton.button.onClick.AddListener(RescanCameras);
 
             _widthSlider = CreateSlider(_widthStorable);
+            RegisterFloat(_widthStorable);
             _widthStorable.setCallbackFunction = v => { _needsRebuild = true; };
+
+            // Derived from Width and the source aspect; shown, not set.
             _heightSlider = CreateSlider(_heightStorable);
-            _heightStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
             _qualitySlider = CreateSlider(_qualityStorable);
+            RegisterFloat(_qualityStorable);
             _qualityStorable.setCallbackFunction = v =>
             {
                 if (_server != null) _server.JpegQuality = Mathf.RoundToInt(v);
             };
 
             _fpsSlider = CreateSlider(_fpsStorable);
+            RegisterFloat(_fpsStorable);
             _fpsStorable.setCallbackFunction = v => { ApplyFrameBudget(); };
 
             _urlText = CreateTextField(_urlStorable);
@@ -199,12 +203,12 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         {
             _sourceCamera = cam;
             _sourceIsCreated = false;
-            // Auto-apply source RT resolution if present, so we stream at the
-            // exact same size the CUA / WindowCamera already renders to.
             if (cam.targetTexture != null)
             {
-                _widthStorable.val = cam.targetTexture.width;
-                _heightStorable.val = cam.targetTexture.height;
+                // Only clamp: overwriting would discard the user's downscale on every
+                // load, since selecting a camera runs whenever a scene restores.
+                if (_widthStorable.val > cam.targetTexture.width)
+                    _widthStorable.valNoCallback = cam.targetTexture.width;
                 _needsRebuild = true;
                 SetStatus("Using: " + cam.name + " (" + cam.targetTexture.width + "x" + cam.targetTexture.height
                           + ") -- lower Width/Height to stream smaller than the source");

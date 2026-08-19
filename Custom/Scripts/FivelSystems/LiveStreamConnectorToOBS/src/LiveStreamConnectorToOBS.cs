@@ -444,7 +444,12 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 _statRenderMs += (Time.realtimeSinceStartup - tr) * 1000f;
             }
 
-            // 5. Capture, if the queue has room.
+            // 5. The readback is the size of the source texture, not of the sliders.
+            //    Keep the pool matched to it, or the copy falls off its fast path onto
+            //    a per-byte loop over several million bytes of main thread time.
+            _worker.EnsureBufferSize(readFrom.width * readFrom.height * 4);
+
+            // 6. Capture, if the queue has room.
             if (_readbacks.Count < MAX_READBACKS_IN_FLIGHT)
             {
                 try

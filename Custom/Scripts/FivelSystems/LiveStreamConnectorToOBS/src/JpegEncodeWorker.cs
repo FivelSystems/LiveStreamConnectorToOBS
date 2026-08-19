@@ -19,7 +19,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private const int JOIN_TIMEOUT_MS = 1000;
 
         private readonly HttpStreamServer _server;
-        private readonly int _bufferBytes;
+        private int _bufferBytes;
         private readonly object _lock = new object();
         private readonly Stack<byte[]> _freeBuffers = new Stack<byte[]>();
         private readonly JpegEncoder _encoder = new JpegEncoder();
@@ -73,6 +73,22 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _thread = null;
         }
 
+        /// <summary>
+        /// Resizes the pool when the source resolution changes. Buffers must match the
+        /// readback exactly or the caller cannot bulk-copy into them.
+        /// </summary>
+        public void EnsureBufferSize(int bytes)
+        {
+            if (bytes < 4) bytes = 4;
+            lock (_lock)
+            {
+                if (bytes == _bufferBytes) return;
+                _bufferBytes = bytes;
+                _freeBuffers.Clear();
+                for (int i = 0; i < BUFFER_POOL_SIZE; i++) _freeBuffers.Push(new byte[bytes]);
+            }
+        }
+
         /// <summary>Null means the worker is still busy: skip the frame, do not allocate.</summary>
         public byte[] Rent()
         {
@@ -85,7 +101,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
         public void Recycle(byte[] buffer)
         {
-            // Size-checked: the sync-capture path submits arrays it allocated itself.
+            // Size-checked: a resize can strand buffers rented before it.
             if (buffer == null || buffer.Length != _bufferBytes) return;
             lock (_lock)
             {

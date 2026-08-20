@@ -161,7 +161,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 if (!IsAuthorized(query))
                 {
                     WriteText(ns, 403, "Forbidden", "text/plain",
-                              "Access key required. Append ?key=... to the URL.");
+                              "Access key required.");
                     return;
                 }
 

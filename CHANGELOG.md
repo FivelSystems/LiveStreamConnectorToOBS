@@ -12,6 +12,85 @@ version numbering.
 
 Nothing yet.
 
+## [v2] — 2026-08-19
+
+### Added
+
+*   **Threaded JPEG encoding.** A built-in baseline encoder (4:2:0, Annex K tables, AAN
+    DCT) runs on a worker thread, so the main thread pays for a buffer copy rather than a
+    full encode. Measured in VaM at a 600x1400 source this gives 30 fps against 20 fps
+    for `Texture2D.EncodeToJPG` on the main thread. It does not match the throughput of
+    the earlier sync-capture-plus-worker configuration, which was removed because it
+    exhausted the heap.
+*   **Flip Output Vertically** toggle, on by default. Readback data starts at the bottom
+    row while JPEG scanlines run top-down; `EncodeToJPG` handled this implicitly, the
+    threaded encoder needs it stated. Persists with the scene.
+*   **Width, Height, JPEG Quality and Target FPS persist with the scene, and nothing
+    overwrites them.** Selecting a camera used to assign Width and Height from the source
+    resolution, which discarded any downscale on every scene load since restoring a scene
+    re-selects the camera. Width is now only clamped down to the source when it exceeds
+    it. Any resolution and any aspect ratio are accepted.
+*   **GPU downscale.** Width and Height now do something for a camera that already has
+    a targetTexture: the source is blitted into the output RenderTexture before readback.
+    Every downstream cost is linear in pixel count, so halving each axis quarters the
+    readback bandwidth, the copy and the encode together. Any resolution and any aspect
+    ratio are valid: the largest centred region of the source that already matches the
+    target's aspect is sampled, so the output always fills the frame and is never
+    stretched. A target that does not match the source aspect crops rather than distorts.
+
+### Removed
+
+*   **Sync Capture.** It existed to beat the single-readback throughput ceiling by
+    stalling the GPU, paying game framerate for stream framerate. Queued readbacks reach
+    the same throughput without the stall, and after the allocation fix the toggle could
+    only cost framerate: it forced `EncodeToJPG` back onto the main thread. With it goes
+    the last main-thread encode, the intermediate `Texture2D`, and `EncodeToJPG` itself.
+
+### Changed
+
+*   **Up to three readbacks are queued** rather than one at a time. A single request
+    takes two to three frames to return, which capped throughput near `game fps / 3`
+    regardless of Target FPS. Requests complete in submission order, so the queue drains
+    from the head, and each carries the width, height and colour space it was taken at.
+
+*   **Capture rate is clamped to the game's own framerate cap**, discovered at runtime
+    from `QualitySettings.vSyncCount` and the display refresh rate, falling back to
+    `Application.targetFrameRate`. Nothing is hardcoded, and the cap is re-read once a
+    second so changing it mid-session takes effect. Every capture costs a GPU readback
+    and, on the manual-render path, a second scene render, so capturing faster than the
+    game was allowed to run spent GPU the user had asked not to spend. The Status line
+    now reports the detected cap beside the game framerate.
+*   **Capture is skipped entirely with no clients connected.** The readback, gamma pass
+    and encode previously ran regardless, so enabling the plugin cost framerate for
+    output nobody was receiving. A readback already in flight is still retired.
+*   The Status line reports main-thread and worker time separately — `main` and `jpeg`
+    replace the single `encode` figure — and appends a dropped-frame count when the
+    worker cannot keep up with the capture rate.
+*   **The server copies frames in and out under its lock**, so a frame buffer is never
+    read while it is being replaced, and nothing on the capture path allocates per frame.
+*   Readback dimensions are taken from the source RenderTexture rather than assumed to
+    match the configured Width/Height, so a mismatch no longer garbles the stream.
+
+### Fixed
+
+*   **RenderTextures are released only once their readback has returned.**
+    `RebuildPipeline()` and `OnDestroy()` freed `_outputRT` with a request possibly still
+    pointing at it, which is an access violation rather than an exception, on the two
+    paths exercised most during development: resolution change and plugin reload. At
+    teardown anything still pending is left alone; leaking a few MB beats killing the
+    host.
+
+*   **Sync Capture no longer feeds the worker thread.** Doing so called
+    `Texture2D.GetRawTextureData()` every frame, which returns a freshly allocated array
+    on this Unity build -- there is no `NativeArray` overload before 2018.2. At a
+    600x1400 source that is 3.4 MB per frame onto the large object heap, which Mono does
+    not compact; sustained, it exhausted the address space and killed the host with
+    `VirtualAllocRemap failed`. Sync Capture encodes on the main thread again, as it did
+    before. The async path is unaffected: it copies into pooled buffers and allocates
+    nothing per frame.
+*   `Capture runs even with zero clients connected` is resolved; removed from the known
+    limitations.
+
 ## [v1] — 2026-08-19
 
 First release of the FivelSystems fork, based on
@@ -67,7 +146,7 @@ Carried over or not yet addressed — see the README for detail.
 *   `-- Create New Camera --` streams black; the created camera is never rendered.
 *   Dragging Width, Height or Port restarts the server on every frame of the drag,
     dropping connected clients.
-*   Capture runs even with zero clients connected.
-*   Only Sync Capture, Allow Network Access and Access Key persist with the scene.
+*   Only Sync Capture, Flip Output Vertically, Allow Network Access and Access Key
+    persist with the scene.
 *   `RebuildPipeline()` and `OnDestroy()` release the RenderTexture without checking for
     a pending readback.

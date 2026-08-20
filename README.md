@@ -16,8 +16,12 @@ your network, with an access key, a throughput toggle, and live diagnostics.
 *   🌐 **Network access** — bind all interfaces instead of loopback only, so a phone,
     tablet or second PC can view the stream. No elevation, no `netsh http add urlacl`.
 *   🔑 **Access key** — optional shared secret required as `?key=…`; anything else gets 403.
-*   ⚡ **Sync Capture toggle** — roughly 3× the stream framerate, at a cost in game
-    framerate. Measure it, keep the winner.
+*   🔽 **GPU downscale** — stream smaller than the source camera. Every cost scales with
+    pixel count, so this is the strongest dial available.
+*   🧵 **Threaded JPEG encoding** — the encode runs on a worker thread instead of the
+    main thread, so streaming costs a buffer copy rather than a full encode.
+*   💤 **No cost with no viewers** — capture is skipped entirely while nothing is
+    connected.
 *   📊 **Live diagnostics** — game fps, stream fps, encode ms, re-render ms and client
     count, refreshed once a second, so you can see which cost dominates before changing
     anything.
@@ -55,21 +59,24 @@ If the `render` figure in the Status line is above a few ms, you picked the seco
 ## 📊 Reading the Status line
 
 ```text
-game 58 fps  |  stream 19.4 fps  |  encode 14.2 ms  |  render 0.0 ms  |  1 client
+game 58 fps  |  stream 19.4 fps  |  main 1.1 ms  |  jpeg 10.4 ms  |  render 0.0 ms  |  1 client
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `game` | Frames VaM ran. |
 | `stream` | Frames actually encoded and sent. The real output rate. |
-| `encode` | Main-thread ms per capture: copy, gamma, JPEG encode. |
+| `main` | Main-thread ms per capture. This is the only figure that costs you framerate. |
+| `jpeg` | Worker-thread ms for the last encode. Off the frame budget. |
 | `render` | Main-thread ms per capture spent re-rendering the scene. |
+| `dropped` | Frames superseded before the worker reached them. Only shown when non-zero. |
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `render` > 5 ms | Source camera has no RenderTexture. | Pick one that has. |
-| `encode` > 10 ms | JPEG encode is the bottleneck. | Lower Width/Height, then JPEG Quality. |
-| `stream` ≈ `game ÷ 3` | The async readback ceiling. | Enable **Sync Capture**. |
+| `main` > 5 ms | The buffer copy is large. | Lower Width/Height. |
+| `jpeg` > 30 ms | Worker cannot keep up with Target FPS. | Lower Width/Height or Target FPS. |
+| `dropped` climbing steadily | Capturing faster than the worker encodes. | Lower Target FPS. |
 | `stream` hits Target FPS but looks choppy | Not the plugin. | Client-side decode or display rate. |
 
 ## ⚡ Framerate
@@ -78,16 +85,14 @@ game 58 fps  |  stream 19.4 fps  |  encode 14.2 ms  |  render 0.0 ms  |  1 clien
 each takes 2–3 frames to return, so throughput is about `game fps ÷ 2–3`. **Raising
 Target FPS above that ceiling does nothing.**
 
-**Sync Capture** swaps in `Texture2D.ReadPixels`, which stalls the GPU but returns pixels
-immediately, lifting throughput to `min(Target FPS, game fps)` at near-zero latency. The
-stall costs game framerate by an amount that depends entirely on your scene — hence a
-toggle rather than a default.
+**Threaded Encode** (on by default) runs the JPEG encode on a worker thread using a
+built-in encoder, leaving the main thread with only a buffer copy. Turning it off falls
+back to Unity's `EncodeToJPG` on the main thread, which is what the `main` figure will
+then report. The built-in encoder produces files within a few percent of Unity's at the
+same quality setting.
 
-| | Async (default) | Sync Capture |
-| --- | --- | --- |
-| Stream fps | `game fps ÷ 2–3` | `min(Target FPS, game fps)` |
-| Game fps | Barely affected | Lower — scene dependent |
-| Latency | 2–3 frames | ~0 |
+If the worker is still busy when the next frame is captured, that frame is dropped rather
+than queued — the stream always shows the newest frame, never a backlog.
 
 **Bandwidth and cost dials, in order of effect:** Width/Height (halving to 960×540 cuts
 both the copy and the encode by more than half), then JPEG Quality (75 → 45 saves a great
@@ -113,19 +118,21 @@ At most 4 concurrent stream clients are accepted; further requests get 503.
 | Control | Notes |
 | --- | --- |
 | Enable Streaming | Off stops the server. |
-| Sync Capture | ~3× stream fps, costs game fps. Persists with the scene. |
+| Threaded Encode | On by default. Off reverts to `EncodeToJPG` on the main thread. Persists. |
+| Flip Output Vertically | On by default. Turn off only if the stream arrives upside down. Persists. |
 | Allow Network Access | Off = loopback only. On = all interfaces. Persists. |
 | Access Key | Empty = open. Otherwise required as `?key=…`. Persists. |
 | Port | Default 8088. Changing it restarts the server. |
 | Source Camera | See above. Refresh with the button below it. |
-| Width / Height | Stream resolution. Changing these restarts the server. |
+| Width | Stream resolution. Lower than the source downscales on the GPU. Persists. |
+| Height | Set freely. Any aspect ratio; the image fills the frame and is cropped, never stretched. Persists. |
 | Target FPS | A ceiling, not a guarantee. |
 | JPEG Quality | Applied live, no restart. The most effective bandwidth dial. |
 | OBS URL | Read-only. The correct URL for current settings. |
 | Status | Diagnostics, refreshed once a second. |
 
-Sync Capture, Allow Network Access and Access Key save with the scene. The remaining
-controls currently do not.
+Width, Height, JPEG Quality, Target FPS, Flip Output Vertically, Allow Network Access
+and Access Key save with the scene. Source Camera and Port do not yet persist.
 
 ## ⚠️ Known limitations
 
@@ -135,9 +142,11 @@ controls currently do not.
     Pick an existing camera instead.
 *   **Dragging Width, Height or Port restarts the server on every frame of the drag**,
     which drops connected clients. Set the value, then reconnect OBS.
-*   **Capture runs even with no viewers.** The readback and encode happen whether or not
-    anything is connected. Toggle Enable Streaming off when you are not streaming.
-*   **Only Sync Capture, Allow Network Access and Access Key persist** with the scene.
+*   **Only Flip Output Vertically, Allow Network Access and Access Key persist** with
+    the scene.
+*   **Streaming still costs framerate.** The encode runs on a worker thread, but at a
+    large source resolution it can still fail to keep up and will contend for CPU. Lower
+    Width to downscale on the GPU before anything else.
 
 ## 🤝 Credits
 
@@ -173,8 +182,10 @@ A maintained fork of [url=https://hub.virtamate.com/resources/livestreamconnecto
 [list]
 [*] [b]Network access[/b]: bind all interfaces instead of loopback only, so a phone or second PC can view the stream. No elevation, no URL ACL.
 [*] [b]Access key[/b]: optional shared secret required as ?key=... ; anything else gets 403.
-[*] [b]Sync Capture toggle[/b]: roughly 3x the stream framerate, at a cost in game framerate.
-[*] [b]Live diagnostics[/b]: game fps, stream fps, encode ms, re-render ms and client count, once a second.
+[*] [b]GPU downscale[/b]: stream smaller than the source camera. Every cost scales with pixel count, so this is the strongest dial available.
+[*] [b]Threaded JPEG encoding[/b]: the encode runs on a worker thread, so streaming costs a buffer copy rather than a full encode.
+[*] [b]No cost with no viewers[/b]: capture is skipped entirely while nothing is connected.
+[*] [b]Live diagnostics[/b]: game fps, stream fps, main-thread ms, worker ms, re-render ms and client count, once a second.
 [*] [b]Hardened server[/b]: 4-client cap, request timeouts, bounded send buffers.
 [/list]
 
@@ -187,7 +198,7 @@ A maintained fork of [url=https://hub.virtamate.com/resources/livestreamconnecto
 [/list]
 
 [size=4][b]Tuning[/b][/size]
-Read the Status line before changing anything. High [i]render[/i] means your source camera has no render texture -- pick another. High [i]encode[/i] means lower Width/Height first, then JPEG Quality. Target FPS is a ceiling, not a guarantee.
+Read the Status line before changing anything. High [i]render[/i] means your source camera has no render texture -- pick another. High [i]main[/i] means lower Width/Height. High [i]jpeg[/i] means the worker cannot keep up -- lower Width/Height or Target FPS. Target FPS is a ceiling, not a guarantee.
 
 [size=4][b]Known limitations[/b][/size]
 [list]

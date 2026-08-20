@@ -17,8 +17,10 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private const int DEFAULT_JPEG_QUALITY = 75;
         private const int DEFAULT_FPS = 30;
 
+        private const int MAX_READBACKS_IN_FLIGHT = 3;
+
         private UIDynamicToggle _enableToggle;
-        private UIDynamicToggle _syncToggle;
+        private UIDynamicToggle _flipToggle;
         private UIDynamicToggle _networkToggle;
         private UIDynamicTextField _accessKeyField;
         private UIDynamicTextField _portField;
@@ -38,7 +40,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private readonly JSONStorableString _portStorable = new JSONStorableString("Port", "" + DEFAULT_PORT);
         private readonly JSONStorableString _urlStorable = new JSONStorableString("OBS URL", "");
         private readonly JSONStorableBool _enableStorable = new JSONStorableBool("Enable Streaming", true);
-        private readonly JSONStorableBool _syncCaptureStorable = new JSONStorableBool("Sync Capture", false);
+        private readonly JSONStorableBool _flipStorable = new JSONStorableBool("Flip Output Vertically", true);
         private readonly JSONStorableBool _networkStorable = new JSONStorableBool("Allow Network Access", false);
         private readonly JSONStorableString _accessKeyStorable = new JSONStorableString("Access Key", "");
         private readonly JSONStorableFloat _widthStorable = new JSONStorableFloat("Width", DEFAULT_WIDTH, 320f, 3840f, false);
@@ -49,18 +51,16 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private Camera _sourceCamera;
         private GameObject _camContainer;
         private RenderTexture _outputRT;
-        private Texture2D _readbackTex;
-        private byte[] _readbackBytes;
+        private readonly List<RenderTexture> _retiredTextures = new List<RenderTexture>();
         private HttpStreamServer _server;
         private bool _sourceIsCreated;
         private bool _needsRebuild;
         private float _frameBudget;
         private float _frameTimer;
         private string _lastStatus = "";
-        private bool _readbackInFlight;
-        private UnityEngine.Experimental.Rendering.AsyncGPUReadbackRequest _pendingRequest;
-        private RenderTexture _readbackTarget;
-        private bool _readbackTargetIsSRGB;
+        private readonly Queue<PendingReadback> _readbacks = new Queue<PendingReadback>();
+        private int _gameFpsCap;
+        private JpegEncodeWorker _worker;
         private static byte[] s_srgbLUT;
 
         // Diagnostics counters.
@@ -69,6 +69,14 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private float _statWindowStart;
         private float _statConsumeMs;
         private float _statRenderMs;
+
+        private struct PendingReadback
+        {
+            public UnityEngine.Experimental.Rendering.AsyncGPUReadbackRequest Request;
+            public int Width;
+            public int Height;
+            public bool IsSRGB;
+        }
 
         public override void Init()
         {
@@ -91,12 +99,12 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _enableStorable.setCallbackFunction = v =>
             {
                 if (v) RebuildPipeline();
-                else StopServer();
+                else StopStreaming();
             };
 
-            // Trades game fps for roughly 3x the stream fps.
-            _syncToggle = CreateToggle(_syncCaptureStorable);
-            RegisterBool(_syncCaptureStorable);
+            // Readback data starts at the bottom row; JPEG scanlines run top-down.
+            _flipToggle = CreateToggle(_flipStorable);
+            RegisterBool(_flipStorable);
 
             // Off = loopback only. On = bind all interfaces.
             _networkToggle = CreateToggle(_networkStorable);
@@ -118,21 +126,23 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _refreshButton.button.onClick.AddListener(RescanCameras);
 
             _widthSlider = CreateSlider(_widthStorable);
+            RegisterFloat(_widthStorable);
             _widthStorable.setCallbackFunction = v => { _needsRebuild = true; };
+
             _heightSlider = CreateSlider(_heightStorable);
+            RegisterFloat(_heightStorable);
             _heightStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
             _qualitySlider = CreateSlider(_qualityStorable);
+            RegisterFloat(_qualityStorable);
             _qualityStorable.setCallbackFunction = v =>
             {
                 if (_server != null) _server.JpegQuality = Mathf.RoundToInt(v);
             };
 
             _fpsSlider = CreateSlider(_fpsStorable);
-            _fpsStorable.setCallbackFunction = v =>
-            {
-                _frameBudget = 1f / Mathf.Max(1f, v);
-            };
+            RegisterFloat(_fpsStorable);
+            _fpsStorable.setCallbackFunction = v => { ApplyFrameBudget(); };
 
             _urlText = CreateTextField(_urlStorable);
 
@@ -190,18 +200,47 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             SetStatus("Created new camera on plugin object");
         }
 
+        /// <summary>
+        /// Fills the target without distorting the source, by sampling the largest
+        /// centred region of it that already has the target's aspect ratio. A plain Blit
+        /// stretches to fit; this scales the source UVs so the excess is cropped instead.
+        /// </summary>
+        private static void BlitPreservingAspect(RenderTexture source, RenderTexture target)
+        {
+            float sourceAspect = (float)source.width / source.height;
+            float targetAspect = (float)target.width / target.height;
+
+            Vector2 scale;
+            Vector2 offset;
+            if (targetAspect > sourceAspect)
+            {
+                float fraction = sourceAspect / targetAspect;
+                scale = new Vector2(1f, fraction);
+                offset = new Vector2(0f, (1f - fraction) * 0.5f);
+            }
+            else
+            {
+                float fraction = targetAspect / sourceAspect;
+                scale = new Vector2(fraction, 1f);
+                offset = new Vector2((1f - fraction) * 0.5f, 0f);
+            }
+
+            Graphics.Blit(source, target, scale, offset);
+        }
+
         private void AdoptSourceCamera(Camera cam)
         {
             _sourceCamera = cam;
             _sourceIsCreated = false;
-            // Auto-apply source RT resolution if present, so we stream at the
-            // exact same size the CUA / WindowCamera already renders to.
             if (cam.targetTexture != null)
             {
-                _widthStorable.val = cam.targetTexture.width;
-                _heightStorable.val = cam.targetTexture.height;
+                // Only clamp: overwriting would discard the user's downscale on every
+                // load, since selecting a camera runs whenever a scene restores.
+                if (_widthStorable.val > cam.targetTexture.width)
+                    _widthStorable.valNoCallback = cam.targetTexture.width;
                 _needsRebuild = true;
-                SetStatus("Using: " + cam.name + " (" + cam.targetTexture.width + "x" + cam.targetTexture.height + ")");
+                SetStatus("Using: " + cam.name + " (" + cam.targetTexture.width + "x" + cam.targetTexture.height
+                          + ") -- lower Width to stream smaller than the source");
             }
             else
             {
@@ -230,23 +269,15 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             int quality = Mathf.RoundToInt(_qualityStorable.val);
             if (quality < 10) quality = 10;
             if (quality > 100) quality = 100;
-            _frameBudget = 1f / Mathf.Max(1f, _fpsStorable.val);
+            ApplyFrameBudget();
             _frameTimer = 0f;
 
-            if (_outputRT != null)
-            {
-                _outputRT.Release();
-                Destroy(_outputRT);
-            }
-            if (_readbackTex != null) Destroy(_readbackTex);
+            RetireOutputTexture();
 
             _outputRT = new RenderTexture(w, h, RT_DEPTH, RenderTextureFormat.Default, RenderTextureReadWrite.sRGB);
             _outputRT.Create();
-            _readbackTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
-            _readbackTex.wrapMode = TextureWrapMode.Clamp;
-            _readbackBytes = new byte[w * h * 4];
 
-            StopServer();
+            StopStreaming();
             try
             {
                 bool bindAll = _networkStorable.val;
@@ -254,6 +285,9 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
                 _server = new HttpStreamServer(port, w, h, quality, bindAll, key);
                 _server.Start();
+
+                _worker = new JpegEncodeWorker(_server, w * h * 4);
+                _worker.Start();
 
                 // Report a URL usable from the device that will consume it.
                 string host = "localhost";
@@ -276,6 +310,62 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             }
 
             _needsRebuild = false;
+        }
+
+        /// <summary>
+        /// Freeing a RenderTexture with a readback still pointing at it is an access
+        /// violation, which kills the process outright rather than throwing. Hold it
+        /// until the request returns.
+        /// </summary>
+        private void RetireOutputTexture()
+        {
+            if (_outputRT == null) return;
+            if (_readbacks.Count > 0) _retiredTextures.Add(_outputRT);
+            else DestroyTexture(_outputRT);
+            _outputRT = null;
+        }
+
+        private void ReleaseRetiredTextures()
+        {
+            if (_readbacks.Count > 0 || _retiredTextures.Count == 0) return;
+            for (int i = 0; i < _retiredTextures.Count; i++) DestroyTexture(_retiredTextures[i]);
+            _retiredTextures.Clear();
+        }
+
+        private static void DestroyTexture(RenderTexture rt)
+        {
+            if (rt == null) return;
+            rt.Release();
+            Destroy(rt);
+        }
+
+        /// <summary>
+        /// The framerate ceiling the game is running under, or 0 when it is uncapped.
+        /// VSync overrides <c>targetFrameRate</c> in Unity, so it is checked first.
+        /// </summary>
+        private static int GetGameFpsCap()
+        {
+            int vsync = QualitySettings.vSyncCount;
+            if (vsync > 0)
+            {
+                int refresh = Screen.currentResolution.refreshRate;
+                if (refresh > 0) return refresh / vsync;
+            }
+            int target = Application.targetFrameRate;
+            return target > 0 ? target : 0;
+        }
+
+        /// <summary>
+        /// Capture rate is clamped to the game's own cap. Every capture costs a readback
+        /// and, on the manual-render path, a second scene render -- so streaming above
+        /// the rate the user allowed the game would spend GPU they asked not to spend.
+        /// </summary>
+        private void ApplyFrameBudget()
+        {
+            float requested = Mathf.Max(1f, _fpsStorable.val);
+            _gameFpsCap = GetGameFpsCap();
+            float effective = _gameFpsCap > 0 ? Mathf.Min(requested, _gameFpsCap) : requested;
+            _frameBudget = 1f / effective;
         }
 
         /// <summary>Address a remote client should dial, or null if undetermined.</summary>
@@ -301,8 +391,14 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             }
         }
 
-        private void StopServer()
+        private void StopStreaming()
         {
+            // Worker first: it holds the server and may still be mid-submit.
+            if (_worker != null)
+            {
+                _worker.Stop();
+                _worker = null;
+            }
             if (_server != null)
             {
                 _server.Stop();
@@ -320,30 +416,29 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _frameTimer += Time.unscaledDeltaTime;
             _statFrames++;
 
-            // 1. If a previous readback is done, consume it
-            if (_readbackInFlight)
+            bool hasClients = _server.ClientCount > 0;
+
+            while (_readbacks.Count > 0 && _readbacks.Peek().Request.done)
             {
-                if (_pendingRequest.done)
-                {
-                    _readbackInFlight = false;
-                    if (!_pendingRequest.hasError)
-                    {
-                        float t0 = Time.realtimeSinceStartup;
-                        ConsumeReadback();
-                        _statConsumeMs += (Time.realtimeSinceStartup - t0) * 1000f;
-                        _statCaptures++;
-                    }
-                }
-                else
-                {
-                    return; // still waiting
-                }
+                PendingReadback done = _readbacks.Dequeue();
+                if (done.Request.hasError || !hasClients) continue;
+
+                float t0 = Time.realtimeSinceStartup;
+                ConsumeReadback(done);
+                _statConsumeMs += (Time.realtimeSinceStartup - t0) * 1000f;
+                _statCaptures++;
             }
 
-            // 2. Resolve the RT to read from -- no manual render!
-            //    - "Create New Camera" mode: my camera renders to my RT natively
-            //    - Existing camera with targetTexture: read its existing RT
-            //    - Existing camera without targetTexture: must manual-render
+            ReleaseRetiredTextures();
+
+            // With nobody connected, every term below is wasted frame time.
+            if (!hasClients)
+            {
+                _frameTimer = 0f;
+                UpdateDiagnostics();
+                return;
+            }
+
             RenderTexture readFrom = null;
             bool needManualRender = false;
             if (_sourceIsCreated)
@@ -362,13 +457,10 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
             if (readFrom == null) return;
 
-            // 3. Throttle to target FPS (accumulated at step 0)
             if (_frameTimer < _frameBudget) return;
             _frameTimer -= _frameBudget;
             if (_frameTimer > _frameBudget) _frameTimer = 0f;
 
-            // 4. If we have to manual-render, do it now (only case is a
-            //    screen-only camera with no targetTexture -- rare in VAM)
             if (needManualRender)
             {
                 float tr = Time.realtimeSinceStartup;
@@ -376,25 +468,27 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 _statRenderMs += (Time.realtimeSinceStartup - tr) * 1000f;
             }
 
-            // 5. Remember which RT and its sRGB flag for the callback
-            _readbackTarget = readFrom;
-            _readbackTargetIsSRGB = readFrom.sRGB;
-
-            // 6. Capture. Sync stalls the GPU but lifts throughput from
-            //    gameFps/2-3 to min(TargetFPS, gameFps), at a cost in game fps.
-            if (_syncCaptureStorable.val)
+            // Downscaling here is linear in every cost downstream.
+            if (_outputRT != null && readFrom != _outputRT &&
+                (readFrom.width != _outputRT.width || readFrom.height != _outputRT.height))
             {
-                float t0 = Time.realtimeSinceStartup;
-                CaptureSync(readFrom);
-                _statConsumeMs += (Time.realtimeSinceStartup - t0) * 1000f;
-                _statCaptures++;
+                BlitPreservingAspect(readFrom, _outputRT);
+                readFrom = _outputRT;
             }
-            else
+
+            // Mismatched buffers drop the copy onto a per-byte loop.
+            _worker.EnsureBufferSize(readFrom.width * readFrom.height * 4);
+
+            if (_readbacks.Count < MAX_READBACKS_IN_FLIGHT)
             {
                 try
                 {
-                    _pendingRequest = UnityEngine.Experimental.Rendering.AsyncGPUReadback.Request(readFrom, 0);
-                    _readbackInFlight = true;
+                    PendingReadback queued;
+                    queued.Request = UnityEngine.Experimental.Rendering.AsyncGPUReadback.Request(readFrom, 0);
+                    queued.Width = readFrom.width;
+                    queued.Height = readFrom.height;
+                    queued.IsSRGB = readFrom.sRGB;
+                    _readbacks.Enqueue(queued);
                 }
                 catch (Exception e)
                 {
@@ -413,19 +507,27 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             float elapsed = now - _statWindowStart;
             if (elapsed < 1f) return;
 
+            // The cap can change mid-session; the slider callback alone would miss it.
+            ApplyFrameBudget();
+
             int clients = _server != null ? _server.ClientCount : 0;
             float gameFps = _statFrames / elapsed;
             float outFps = _statCaptures / elapsed;
-            float consumeMs = _statCaptures > 0 ? _statConsumeMs / _statCaptures : 0f;
+            float mainMs = _statCaptures > 0 ? _statConsumeMs / _statCaptures : 0f;
             float renderMs = _statCaptures > 0 ? _statRenderMs / _statCaptures : 0f;
+            float jpegMs = _worker != null ? _worker.LastEncodeMs : 0f;
+            int dropped = _worker != null ? _worker.TakeDroppedFrames() : 0;
 
             // Not via SetStatus: that logs, and once a second is spam.
             _statusStorable.val =
                 "game " + gameFps.ToString("F0") + " fps" +
+                (_gameFpsCap > 0 ? " (cap " + _gameFpsCap + ")" : " (uncapped)") +
                 "  |  stream " + outFps.ToString("F1") + " fps" +
-                "  |  encode " + consumeMs.ToString("F1") + " ms" +
+                "  |  main " + mainMs.ToString("F1") + " ms" +
+                "  |  jpeg " + jpegMs.ToString("F1") + " ms" +
                 "  |  render " + renderMs.ToString("F1") + " ms" +
-                "  |  " + clients + (clients == 1 ? " client" : " clients");
+                "  |  " + clients + (clients == 1 ? " client" : " clients") +
+                (dropped > 0 ? "  |  " + dropped + " dropped" : "");
 
             _statFrames = 0;
             _statCaptures = 0;
@@ -434,72 +536,31 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _statWindowStart = now;
         }
 
-        private void ConsumeReadback()
+        private void ConsumeReadback(PendingReadback readback)
         {
-            if (_readbackTex == null || _readbackBytes == null) return;
+            if (_worker == null) return;
 
-            var data = _pendingRequest.GetData<byte>();
-            int needed = _readbackTex.width * _readbackTex.height * 4;
-            if (data.Length < needed || _readbackBytes.Length < needed) return;
+            var data = readback.Request.GetData<byte>();
+            int needed = readback.Width * readback.Height * 4;
+            if (needed <= 0 || data.Length < needed) return;
+
+            // Pooled buffer, so the async path allocates nothing per frame.
+            byte[] buffer = _worker.Rent();
+            if (buffer == null) return; // worker still busy; the next frame supersedes this one
+            if (buffer.Length < needed)
+            {
+                _worker.Recycle(buffer);
+                return;
+            }
 
             // Bulk copy; CopyTo needs exact length, so keep a fallback.
-            if (data.Length == _readbackBytes.Length)
-                data.CopyTo(_readbackBytes);
+            if (data.Length == buffer.Length)
+                data.CopyTo(buffer);
             else
-                for (int i = 0; i < needed; i++) _readbackBytes[i] = data[i];
+                for (int i = 0; i < needed; i++) buffer[i] = data[i];
 
-            if (!_readbackTargetIsSRGB)
-            {
-                // Linear source: gamma-encode in place, alpha untouched.
-                byte[] lut = s_srgbLUT;
-                for (int i = 0; i < needed; i += 4)
-                {
-                    _readbackBytes[i + 0] = lut[_readbackBytes[i + 0]];
-                    _readbackBytes[i + 1] = lut[_readbackBytes[i + 1]];
-                    _readbackBytes[i + 2] = lut[_readbackBytes[i + 2]];
-                }
-            }
-
-            _readbackTex.LoadRawTextureData(_readbackBytes);
-            _readbackTex.Apply(false);
-            byte[] jpeg = _readbackTex.EncodeToJPG(_server.JpegQuality);
-            if (jpeg != null) _server.SubmitFrame(jpeg);
-        }
-
-        /// <summary>Immediate readback: stalls the GPU, holds no pending work.</summary>
-        private void CaptureSync(RenderTexture src)
-        {
-            if (_readbackTex == null || src == null || _server == null) return;
-
-            RenderTexture prev = RenderTexture.active;
-            try
-            {
-                RenderTexture.active = src;
-                _readbackTex.ReadPixels(new Rect(0f, 0f, _readbackTex.width, _readbackTex.height), 0, 0, false);
-                _readbackTex.Apply(false);
-            }
-            finally
-            {
-                RenderTexture.active = prev;
-            }
-
-            if (!_readbackTargetIsSRGB && s_srgbLUT != null)
-            {
-                // Slow path: GetRawTextureData allocates. Skipped for sRGB sources.
-                byte[] raw = _readbackTex.GetRawTextureData();
-                byte[] lut = s_srgbLUT;
-                for (int i = 0; i + 3 < raw.Length; i += 4)
-                {
-                    raw[i + 0] = lut[raw[i + 0]];
-                    raw[i + 1] = lut[raw[i + 1]];
-                    raw[i + 2] = lut[raw[i + 2]];
-                }
-                _readbackTex.LoadRawTextureData(raw);
-                _readbackTex.Apply(false);
-            }
-
-            byte[] jpeg = _readbackTex.EncodeToJPG(_server.JpegQuality);
-            if (jpeg != null) _server.SubmitFrame(jpeg);
+            _worker.Submit(buffer, readback.Width, readback.Height, _server.JpegQuality,
+                           _flipStorable.val, readback.IsSRGB ? null : s_srgbLUT);
         }
 
         private void RenderCameraToMyRT()
@@ -547,18 +608,21 @@ namespace FivelSystems.LiveStreamConnectorToOBS
 
         private void OnDestroy()
         {
-            StopServer();
+            StopStreaming();
             TeardownCamera();
-            if (_outputRT != null)
+
+            // A readback outliving the plugin leaks a few MB, which is the cheaper of
+            // the two outcomes: the texture is not owned by a GameObject, so the request
+            // completes against live memory and the scene unload collects it.
+            if (_readbacks.Count > 0)
             {
-                _outputRT.Release();
-                Destroy(_outputRT);
                 _outputRT = null;
+                _retiredTextures.Clear();
             }
-            if (_readbackTex != null)
+            else
             {
-                Destroy(_readbackTex);
-                _readbackTex = null;
+                RetireOutputTexture();
+                ReleaseRetiredTextures();
             }
         }
     }

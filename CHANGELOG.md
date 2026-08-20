@@ -10,6 +10,13 @@ version numbering.
 
 ## [Unreleased]
 
+### Added
+
+*   **All Addresses field.** The listener has always bound every interface at once; the
+    UI only ever named one of them. The new read-only field lists a working URL for
+    every IPv4 address the host answers on, best first, so a VPN, LAN or hotspot address
+    can be copied without guessing which one the viewing device can route to.
+
 ### Fixed
 
 *   **Access Key and Port were impossible to edit.** Both were built with
@@ -19,6 +26,15 @@ version numbering.
     into `val`.
 *   **Port now persists with the scene.** It was the one control never passed to
     `RegisterString`, so a saved scene always came back on the default port.
+*   **OBS URL no longer prefers a VPN address over the LAN one.** Host selection
+    returned the first address in the `100.64.0.0/10` carrier-grade NAT range, where
+    overlay VPNs hand out node addresses, so a machine running one advertised its
+    overlay address even when an ordinary LAN address was available. Candidates are now
+    ranked rather than taken first-match: `192.168/16`, then `10/8`, then `172.16/12`,
+    then everything else, with link-local `169.254/16` last. Ranking `172.16/12` below
+    the others keeps a Hyper-V, WSL or Docker virtual switch from being advertised in
+    place of the real LAN address. This affects which URL is *displayed* only — the
+    listener has always bound every interface at once.
 
 ## [v2] — 2026-08-19
 
@@ -119,7 +135,7 @@ First release of the FivelSystems fork, based on
     fps, main-thread encode ms, scene re-render ms, and connected client count. Replaces
     the previous "Waiting for client" / "Streaming" text.
 *   **LAN-aware OBS URL.** With network access on, the URL field reports a routable host
-    address rather than `localhost`, preferring a CGNAT-range address where one exists.
+    address rather than `localhost`.
 *   Request timeouts, `NoDelay`, and a bounded send buffer on each client socket, so a
     slow link drops frames instead of queueing them.
 

@@ -14,6 +14,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private const int DEFAULT_WIDTH = 1280;
         private const int DEFAULT_HEIGHT = 720;
         private const int RT_DEPTH = 24;
+        private const int WORST_HOST_RANK = 4;
         private const float TEXT_INPUT_HEIGHT = 50f;
         private const int DEFAULT_PORT = 8088;
         private const int DEFAULT_JPEG_QUALITY = 75;
@@ -34,6 +35,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private UIDynamicButton _refreshButton;
         private UIDynamicTextField _statusText;
         private UIDynamicTextField _urlText;
+        private UIDynamicTextField _addressesText;
 
         private readonly List<CameraInfo> _sceneCameras = new List<CameraInfo>();
         private readonly List<string> _popupOptions = new List<string>();
@@ -41,6 +43,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private readonly JSONStorableString _statusStorable = new JSONStorableString("Status", "");
         private readonly JSONStorableString _portStorable = new JSONStorableString("Port", "" + DEFAULT_PORT);
         private readonly JSONStorableString _urlStorable = new JSONStorableString("OBS URL", "");
+        private readonly JSONStorableString _addressesStorable =
+            new JSONStorableString("All Addresses", "");
         private readonly JSONStorableBool _enableStorable = new JSONStorableBool("Enable Streaming", true);
         private readonly JSONStorableBool _flipStorable = new JSONStorableBool("Flip Output Vertically", true);
         private readonly JSONStorableBool _networkStorable = new JSONStorableBool("Allow Network Access", false);
@@ -148,6 +152,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _fpsStorable.setCallbackFunction = v => { ApplyFrameBudget(); };
 
             _urlText = CreateTextField(_urlStorable);
+            _addressesText = CreateTextField(_addressesStorable);
 
             _statusText = CreateTextField(_statusStorable);
         }
@@ -309,15 +314,18 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 _worker = new JpegEncodeWorker(_server, w * h * 4);
                 _worker.Start();
 
-                // Report a URL usable from the device that will consume it.
-                string host = "localhost";
-                if (bindAll)
-                {
-                    string found = GetPreferredHost();
-                    if (found != null) host = found;
-                }
+                // The socket is bound to every interface, so every address below
+                // reaches it. OBS URL carries the single best guess for one-click paste;
+                // All Addresses exists because only the operator knows which network the
+                // viewing device is actually on.
                 string suffix = key.Length > 0 ? "?key=" + Uri.EscapeDataString(key) : "";
-                _urlStorable.val = "http://" + host + ":" + port + "/stream" + suffix;
+                List<string> hosts = bindAll ? GetHostAddresses() : new List<string>();
+                string host = hosts.Count > 0 ? hosts[0] : "localhost";
+
+                _urlStorable.val = BuildUrl(host, port, suffix);
+                _addressesStorable.val = bindAll
+                    ? BuildAddressList(hosts, port, suffix)
+                    : BuildUrl("localhost", port, suffix);
 
                 SetStatus(bindAll
                     ? "Streaming on all interfaces, port " + port
@@ -388,27 +396,69 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _frameBudget = 1f / effective;
         }
 
-        /// <summary>Address a remote client should dial, or null if undetermined.</summary>
-        private static string GetPreferredHost()
+        /// <summary>
+        /// Every IPv4 address this host answers on, most likely to be reachable first.
+        /// The listener binds all of them at once, so this is a display concern only.
+        /// </summary>
+        private static List<string> GetHostAddresses()
         {
+            List<string> ranked = new List<string>();
             try
             {
                 IPAddress[] addrs = Dns.GetHostAddresses(Dns.GetHostName());
-                string lan = null;
-                for (int i = 0; i < addrs.Length; i++)
+
+                // Collect a rank at a time. List.Sort is not stable in this runtime, and
+                // two addresses of equal rank should keep the order the OS gave them.
+                for (int want = 0; want <= WORST_HOST_RANK; want++)
                 {
-                    if (addrs[i].AddressFamily != AddressFamily.InterNetwork) continue;
-                    byte[] b = addrs[i].GetAddressBytes();
-                    if (b[0] == 127) continue;
-                    if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return addrs[i].ToString();
-                    if (lan == null) lan = addrs[i].ToString();
+                    for (int i = 0; i < addrs.Length; i++)
+                    {
+                        if (addrs[i].AddressFamily != AddressFamily.InterNetwork) continue;
+                        byte[] b = addrs[i].GetAddressBytes();
+                        if (b[0] == 127) continue;
+                        if (RankHost(b) != want) continue;
+                        ranked.Add(addrs[i].ToString());
+                    }
                 }
-                return lan;
             }
             catch
             {
-                return null;
+                // Name resolution is best-effort; an empty list falls back to localhost.
             }
+            return ranked;
+        }
+
+        private static string BuildUrl(string host, int port, string suffix)
+        {
+            return "http://" + host + ":" + port + "/stream" + suffix;
+        }
+
+        private static string BuildAddressList(List<string> hosts, int port, string suffix)
+        {
+            if (hosts.Count == 0) return "(no network address found)";
+
+            string list = "";
+            for (int i = 0; i < hosts.Count; i++)
+            {
+                if (i > 0) list += "\n";
+                list += BuildUrl(hosts[i], port, suffix);
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// How likely a phone or a second PC on the same Wi-Fi is to reach this address,
+        /// lower being better. One host answers on several at once - the router's LAN
+        /// range, a hypervisor's virtual switch, an overlay VPN - and only the first is
+        /// dialable by a device that has done nothing but join the same Wi-Fi.
+        /// </summary>
+        private static int RankHost(byte[] b)
+        {
+            if (b[0] == 192 && b[1] == 168) return 0;               // the usual home router range
+            if (b[0] == 10) return 1;                               // larger private LANs
+            if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return 2;  // private, but Hyper-V, WSL and Docker sit here
+            if (b[0] == 169 && b[1] == 254) return 4;               // link-local: DHCP never answered, useless
+            return 3;                                               // overlay VPN, carrier NAT, or public
         }
 
         private void StopStreaming()

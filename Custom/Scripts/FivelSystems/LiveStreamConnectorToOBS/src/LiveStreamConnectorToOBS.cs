@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using UnityEngine;
+using UnityEngine.UI;
 using MeshVR;
 using SimpleJSON;
 
@@ -13,6 +14,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private const int DEFAULT_WIDTH = 1280;
         private const int DEFAULT_HEIGHT = 720;
         private const int RT_DEPTH = 24;
+        private const float TEXT_INPUT_HEIGHT = 50f;
         private const int DEFAULT_PORT = 8088;
         private const int DEFAULT_JPEG_QUALITY = 75;
         private const int DEFAULT_FPS = 30;
@@ -112,11 +114,11 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _networkStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
             // Empty = no key required; otherwise callers must pass ?key=...
-            _accessKeyField = CreateTextField(_accessKeyStorable);
+            _accessKeyField = CreateEditableTextField(_accessKeyStorable);
             RegisterString(_accessKeyStorable);
             _accessKeyStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
-            _portField = CreateTextField(_portStorable);
+            _portField = CreateEditableTextField(_portStorable);
             _portStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
             _cameraPopup = CreatePopup(_cameraChooser, false);
@@ -147,6 +149,23 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _urlText = CreateTextField(_urlStorable);
 
             _statusText = CreateTextField(_statusStorable);
+        }
+
+        /// <summary>
+        /// CreateTextField only displays a value; it has no way to accept typing, which
+        /// left Access Key and Port permanently read-only. An InputField grafted onto the
+        /// same object and handed to the storable is what routes typed characters into
+        /// val and fires setCallbackFunction.
+        /// </summary>
+        private UIDynamicTextField CreateEditableTextField(JSONStorableString storable)
+        {
+            UIDynamicTextField field = CreateTextField(storable);
+            field.height = TEXT_INPUT_HEIGHT;
+
+            InputField input = field.gameObject.AddComponent<InputField>();
+            input.textComponent = field.UItext;
+            storable.inputField = input;
+            return field;
         }
 
         private void RescanCameras()

@@ -30,7 +30,8 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 result.Add(new CameraInfo
                 {
                     Camera = cam,
-                    DisplayName = Describe(cam)
+                    DisplayName = Describe(cam),
+                    Key = MakeKey(cam)
                 });
             }
             return result;
@@ -55,6 +56,28 @@ namespace FivelSystems.LiveStreamConnectorToOBS
                 }
             }
             return best;
+        }
+
+        /// <summary>
+        /// Identity used to persist a selection. Deliberately excludes the render
+        /// texture size that Describe reports, so resizing a camera's target does not
+        /// orphan a saved scene's choice.
+        /// </summary>
+        private static string MakeKey(Camera cam)
+        {
+            var sb = new StringBuilder();
+            var root = cam.transform.root;
+            if (root != null)
+            {
+                var atom = root.GetComponent<Atom>();
+                if (atom != null)
+                {
+                    sb.Append(atom.uid);
+                    sb.Append('/');
+                }
+            }
+            sb.Append(cam.name);
+            return sb.ToString();
         }
 
         private static string Describe(Camera cam)
@@ -88,5 +111,6 @@ namespace FivelSystems.LiveStreamConnectorToOBS
     {
         public Camera Camera;
         public string DisplayName;
+        public string Key;
     }
 }

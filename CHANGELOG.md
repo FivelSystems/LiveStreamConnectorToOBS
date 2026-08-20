@@ -19,6 +19,14 @@ version numbering.
 
 ### Fixed
 
+*   **Source Camera now persists with the scene.** Three faults compounded: the chooser
+    was never passed to `RegisterStringChooser`, so nothing was written to the scene at
+    all; the value stored was the popup label, which embeds the render texture size and
+    so stopped matching whenever that changed; and `Init` scanned once, before the atom
+    owning the camera necessarily existed. The chooser now stores a stable
+    `atomUid/cameraName` key while the popup keeps showing the descriptive label, and a
+    selection naming a camera that has not loaded yet is retried once a second for
+    twenty seconds instead of being discarded as invalid.
 *   **Access Key and Port were impossible to edit.** Both were built with
     `CreateTextField`, which renders a value but accepts no keystrokes, so the access
     key could never be set and the port was stuck at 8088. Both now graft an

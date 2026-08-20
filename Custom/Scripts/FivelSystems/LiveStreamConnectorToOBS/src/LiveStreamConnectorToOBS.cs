@@ -16,6 +16,9 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private const int RT_DEPTH = 24;
         private const int WORST_HOST_RANK = 4;
         private const float TEXT_INPUT_HEIGHT = 50f;
+        private const float RESOLVE_RETRY_SECONDS = 1f;
+        private const float RESOLVE_WINDOW_SECONDS = 20f;
+        private const string CREATE_NEW_KEY = "__create_new__";
         private const int DEFAULT_PORT = 8088;
         private const int DEFAULT_JPEG_QUALITY = 75;
         private const int DEFAULT_FPS = 30;
@@ -38,7 +41,13 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private UIDynamicTextField _addressesText;
 
         private readonly List<CameraInfo> _sceneCameras = new List<CameraInfo>();
-        private readonly List<string> _popupOptions = new List<string>();
+        private readonly List<string> _popupKeys = new List<string>();
+        private readonly List<string> _popupLabels = new List<string>();
+
+        // Set when a restored selection names a camera the scene has not loaded yet.
+        private string _pendingCameraKey;
+        private float _resolveTimer;
+        private float _resolveElapsed;
         private readonly JSONStorableStringChooser _cameraChooser = new JSONStorableStringChooser("SourceCamera", new List<string>(), "", "Source Camera");
         private readonly JSONStorableString _statusStorable = new JSONStorableString("Status", "");
         private readonly JSONStorableString _portStorable = new JSONStorableString("Port", "" + DEFAULT_PORT);
@@ -127,6 +136,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _portStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
             _cameraPopup = CreatePopup(_cameraChooser, false);
+            RegisterStringChooser(_cameraChooser);
             _cameraChooser.setCallbackFunction = OnCameraSelected;
 
             _refreshButton = CreateButton("Refresh Camera List", true);
@@ -177,38 +187,50 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private void RescanCameras()
         {
             _sceneCameras.Clear();
-            _popupOptions.Clear();
+            _popupKeys.Clear();
+            _popupLabels.Clear();
             var found = CameraScanner.Scan(c => c.name != "__SpoutSourceCam");
             _sceneCameras.AddRange(found);
 
-            _popupOptions.Add("-- Create New Camera --");
+            _popupKeys.Add(CREATE_NEW_KEY);
+            _popupLabels.Add("-- Create New Camera --");
             for (int i = 0; i < _sceneCameras.Count; i++)
             {
-                _popupOptions.Add(_sceneCameras[i].DisplayName);
+                // Two cameras can share a name under one atom; keep keys unique so a
+                // saved selection resolves to exactly one of them.
+                string key = _sceneCameras[i].Key;
+                if (_popupKeys.Contains(key)) key = key + "#" + i;
+
+                _popupKeys.Add(key);
+                _popupLabels.Add(_sceneCameras[i].DisplayName);
             }
-            _cameraChooser.choices = new List<string>(_popupOptions);
-            if (string.IsNullOrEmpty(_cameraChooser.val) && _popupOptions.Count > 0)
-                _cameraChooser.val = _popupOptions[0];
+
+            // The popup shows labels; the scene stores keys.
+            _cameraChooser.choices = new List<string>(_popupKeys);
+            _cameraChooser.displayChoices = new List<string>(_popupLabels);
+            if (string.IsNullOrEmpty(_cameraChooser.val) && _popupKeys.Count > 0)
+                _cameraChooser.val = _popupKeys[0];
         }
 
         private void OnCameraSelected(string val)
         {
             if (string.IsNullOrEmpty(val)) return;
-            TeardownCamera();
-            int index = _popupOptions.IndexOf(val);
-            if (index == 0)
+
+            int index = _popupKeys.IndexOf(val);
+            if (index < 0)
             {
-                CreateNewSourceCamera();
-            }
-            else if (index > 0 && index - 1 < _sceneCameras.Count)
-            {
-                AdoptSourceCamera(_sceneCameras[index - 1].Camera);
-            }
-            else
-            {
-                SetStatus("Invalid selection");
+                // Almost always a scene still loading rather than a bad value, so hold
+                // the key and keep looking instead of tearing down what is running.
+                _pendingCameraKey = val;
+                _resolveTimer = 0f;
+                _resolveElapsed = 0f;
+                SetStatus("Waiting for camera: " + val);
                 return;
             }
+
+            TeardownCamera();
+            if (index == 0) CreateNewSourceCamera();
+            else AdoptSourceCamera(_sceneCameras[index - 1].Camera);
         }
 
         private void CreateNewSourceCamera()
@@ -461,6 +483,38 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             return 3;                                               // overlay VPN, carrier NAT, or public
         }
 
+        /// <summary>
+        /// A scene load can build this plugin before the atom owning the saved camera
+        /// exists, so the restored key matches nothing on the first scan. Rescan on a
+        /// slow tick for a bounded window rather than giving up on the first miss.
+        /// </summary>
+        private void ResolvePendingCamera()
+        {
+            _resolveElapsed += Time.unscaledDeltaTime;
+            _resolveTimer += Time.unscaledDeltaTime;
+            if (_resolveTimer < RESOLVE_RETRY_SECONDS) return;
+            _resolveTimer = 0f;
+
+            RescanCameras();
+            string key = _pendingCameraKey;
+            if (_popupKeys.Contains(key))
+            {
+                _pendingCameraKey = null;
+
+                // Show the resolved entry in the popup without re-entering the callback
+                // that is about to run.
+                _cameraChooser.valNoCallback = key;
+                OnCameraSelected(key);
+                return;
+            }
+
+            if (_resolveElapsed >= RESOLVE_WINDOW_SECONDS)
+            {
+                _pendingCameraKey = null;
+                SetStatus("Saved camera not found: " + key);
+            }
+        }
+
         private void StopStreaming()
         {
             // Worker first: it holds the server and may still be mid-submit.
@@ -479,6 +533,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         private void LateUpdate()
         {
             if (_needsRebuild) RebuildPipeline();
+            if (_pendingCameraKey != null) ResolvePendingCamera();
             if (!_enableStorable.val || _sourceCamera == null || _server == null) return;
 
             // Accumulate before any early return, so readback latency overlaps

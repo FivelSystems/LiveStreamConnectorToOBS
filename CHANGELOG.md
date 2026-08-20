@@ -17,6 +17,8 @@ version numbering.
     key could never be set and the port was stuck at 8088. Both now graft an
     `InputField` onto the field and hand it to the storable, which is what routes typing
     into `val`.
+*   **Port now persists with the scene.** It was the one control never passed to
+    `RegisterString`, so a saved scene always came back on the default port.
 
 ## [v2] — 2026-08-19
 

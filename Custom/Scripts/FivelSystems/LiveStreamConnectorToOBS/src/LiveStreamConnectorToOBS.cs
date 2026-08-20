@@ -119,6 +119,7 @@ namespace FivelSystems.LiveStreamConnectorToOBS
             _accessKeyStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
             _portField = CreateEditableTextField(_portStorable);
+            RegisterString(_portStorable);
             _portStorable.setCallbackFunction = v => { _needsRebuild = true; };
 
             _cameraPopup = CreatePopup(_cameraChooser, false);

@@ -33,9 +33,10 @@ Nothing yet.
 *   **GPU downscale.** Width and Height now do something for a camera that already has
     a targetTexture: the source is blitted into the output RenderTexture before readback.
     Every downstream cost is linear in pixel count, so halving each axis quarters the
-    readback bandwidth, the copy and the encode together. The source is scaled to fit
-    the target and centred, letterboxing whatever the two aspect ratios do not have in
-    common, so the image is never distorted at any target resolution.
+    readback bandwidth, the copy and the encode together. Any resolution and any aspect
+    ratio are valid: the largest centred region of the source that already matches the
+    target's aspect is sampled, so the output always fills the frame and is never
+    stretched. A target that does not match the source aspect crops rather than distorts.
 
 ### Removed
 

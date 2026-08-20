@@ -201,32 +201,31 @@ namespace FivelSystems.LiveStreamConnectorToOBS
         }
 
         /// <summary>
-        /// Scales the source into the target without distorting it, letterboxing whatever
-        /// the aspects do not have in common. Graphics.Blit would stretch to fill.
+        /// Fills the target without distorting the source, by sampling the largest
+        /// centred region of it that already has the target's aspect ratio. A plain Blit
+        /// stretches to fit; this scales the source UVs so the excess is cropped instead.
         /// </summary>
         private static void BlitPreservingAspect(RenderTexture source, RenderTexture target)
         {
-            float scale = Mathf.Min((float)target.width / source.width,
-                                    (float)target.height / source.height);
-            float w = source.width * scale;
-            float h = source.height * scale;
-            float x = (target.width - w) * 0.5f;
-            float y = (target.height - h) * 0.5f;
+            float sourceAspect = (float)source.width / source.height;
+            float targetAspect = (float)target.width / target.height;
 
-            RenderTexture previous = RenderTexture.active;
-            try
+            Vector2 scale;
+            Vector2 offset;
+            if (targetAspect > sourceAspect)
             {
-                RenderTexture.active = target;
-                GL.Clear(true, true, Color.black);
-                GL.PushMatrix();
-                GL.LoadPixelMatrix(0f, target.width, target.height, 0f);
-                Graphics.DrawTexture(new Rect(x, y, w, h), source);
-                GL.PopMatrix();
+                float fraction = sourceAspect / targetAspect;
+                scale = new Vector2(1f, fraction);
+                offset = new Vector2(0f, (1f - fraction) * 0.5f);
             }
-            finally
+            else
             {
-                RenderTexture.active = previous;
+                float fraction = targetAspect / sourceAspect;
+                scale = new Vector2(fraction, 1f);
+                offset = new Vector2((1f - fraction) * 0.5f, 0f);
             }
+
+            Graphics.Blit(source, target, scale, offset);
         }
 
         private void AdoptSourceCamera(Camera cam)

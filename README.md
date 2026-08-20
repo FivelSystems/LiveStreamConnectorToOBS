@@ -125,7 +125,7 @@ At most 4 concurrent stream clients are accepted; further requests get 503.
 | Port | Default 8088. Changing it restarts the server. |
 | Source Camera | See above. Refresh with the button below it. |
 | Width | Stream resolution. Lower than the source downscales on the GPU. Persists. |
-| Height | Set freely. Any aspect ratio; the image is fitted and letterboxed, never stretched. Persists. |
+| Height | Set freely. Any aspect ratio; the image fills the frame and is cropped, never stretched. Persists. |
 | Target FPS | A ceiling, not a guarantee. |
 | JPEG Quality | Applied live, no restart. The most effective bandwidth dial. |
 | OBS URL | Read-only. The correct URL for current settings. |

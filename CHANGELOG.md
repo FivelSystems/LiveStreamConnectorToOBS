@@ -10,6 +10,10 @@ version numbering.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [v3] - 2026-08-20
+
 ### Added
 
 *   **All Addresses field.** The listener has always bound every interface at once; the

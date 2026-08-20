@@ -1,7 +1,7 @@
 # LiveStreamConnectorToOBS for Virt-A-Mate
 
 ![License](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)
-![Version](https://img.shields.io/badge/Version-v1-blue.svg)
+![Version](https://img.shields.io/badge/Version-v3-blue.svg)
 [![Support](https://img.shields.io/badge/Support-Buy_Me_A_Coffee-orange.svg)](https://buymeacoffee.com/fivelsystems)
 
 Stream any VaM camera as **MJPEG over HTTP**. No Spout, no NDI, no native DLLs — just a
@@ -31,7 +31,7 @@ your network, with an access key, a throughput toggle, and live diagnostics.
 ## 🚀 Installation
 
 1.  Download `FivelSystems.LiveStreamConnectorToOBS.<n>.var` from
-    [Releases](https://github.com/FivelSystems/LiveStreamConnectorFix/releases).
+    [Releases](https://github.com/FivelSystems/LiveStreamConnectorToOBS/releases).
 2.  Drop it into your `AddonPackages` folder and start VaM.
 3.  Select any atom → **Plugins** → **Add Plugin** → `LiveStreamConnectorToOBS.cslist`.
 
@@ -113,6 +113,30 @@ reverse proxy in front of the port if that matters.
 
 At most 4 concurrent stream clients are accepted; further requests get 503.
 
+### Windows Firewall
+
+Binding every interface is not enough on its own -- Windows still has to let the traffic
+in. The first time the server binds with **Allow Network Access** on, Windows raises a
+**Windows Security Alert** asking whether to allow VaM to communicate. Tick both
+**Private** and **Public** and accept. That is the whole setup, and it needs no command
+line.
+
+Two things commonly go wrong:
+
+*   **The prompt never appears.** In VR or exclusive fullscreen it opens behind the game
+    and is easy to miss. Turn network access on once with VaM in desktop windowed mode,
+    answer the prompt, then go back to VR.
+*   **The network is classified Public.** Windows applies a separate firewall profile per
+    network, and a *Public* network is filtered far more aggressively than a *Private*
+    one. A stream that works on your home Wi-Fi can fail on another network for this
+    reason alone. Check under Settings -> Network & Internet -> your connection ->
+    Network profile type.
+
+If the prompt was missed or dismissed, allow VaM by hand: Start -> *Allow an app through
+Windows Firewall* -> **Change settings** -> **Allow another app...** -> browse to
+`VaM.exe` -> tick **Private** and **Public**. This needs a local administrator; a
+standard user account cannot grant it.
+
 ## 🎛️ UI reference
 
 | Control | Notes |
@@ -122,17 +146,18 @@ At most 4 concurrent stream clients are accepted; further requests get 503.
 | Flip Output Vertically | On by default. Turn off only if the stream arrives upside down. Persists. |
 | Allow Network Access | Off = loopback only. On = all interfaces. Persists. |
 | Access Key | Empty = open. Otherwise required as `?key=…`. Persists. |
-| Port | Default 8088. Changing it restarts the server. |
-| Source Camera | See above. Refresh with the button below it. |
+| Port | Default 8088. Changing it restarts the server. Persists. |
+| Source Camera | See above. Refresh with the button below it. Persists. |
 | Width | Stream resolution. Lower than the source downscales on the GPU. Persists. |
 | Height | Set freely. Any aspect ratio; the image fills the frame and is cropped, never stretched. Persists. |
 | Target FPS | A ceiling, not a guarantee. |
 | JPEG Quality | Applied live, no restart. The most effective bandwidth dial. |
 | OBS URL | Read-only. The correct URL for current settings. |
+| All Addresses | Read-only. One URL per interface the host answers on, most likely reachable first. |
 | Status | Diagnostics, refreshed once a second. |
 
-Width, Height, JPEG Quality, Target FPS, Flip Output Vertically, Allow Network Access
-and Access Key save with the scene. Source Camera and Port do not yet persist.
+Source Camera, Port, Width, Height, JPEG Quality, Target FPS, Flip Output Vertically,
+Allow Network Access and Access Key all save with the scene.
 
 ## ⚠️ Known limitations
 
@@ -142,8 +167,6 @@ and Access Key save with the scene. Source Camera and Port do not yet persist.
     Pick an existing camera instead.
 *   **Dragging Width, Height or Port restarts the server on every frame of the drag**,
     which drops connected clients. Set the value, then reconnect OBS.
-*   **Only Flip Output Vertically, Allow Network Access and Access Key persist** with
-    the scene.
 *   **Streaming still costs framerate.** The encode runs on a worker thread, but at a
     large source resolution it can still fail to keep up and will contend for CPU. Lower
     Width to downscale on the GPU before anything else.
@@ -205,6 +228,7 @@ Read the Status line before changing anything. High [i]render[/i] means your sou
 [*] IPv4 only.
 [*] "Create New Camera" streams black -- pick an existing camera.
 [*] Dragging Width/Height/Port restarts the server and drops clients.
+[*] Windows must allow VaM through the firewall before another device can connect. Answer the Windows prompt, or allow VaM.exe by hand for both Private and Public networks.
 [/list]
 
 [size=4][b]Credits[/b][/size]
